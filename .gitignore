@@ -6,10 +6,9 @@ src-tauri/gen/schemas/
 node_modules/
 package-lock.json
 
-# 临时探测文件
-_env.txt
-_env_done.txt
-_scan.txt
+# 临时探测 / 命令输出抓取
+_*.txt
+.workbuddy/_*.txt
 
 # 系统
 Thumbs.db
