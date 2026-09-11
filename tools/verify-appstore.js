@@ -101,6 +101,13 @@ ok(Object.keys(AS.exportAll()).length === 3, 'remove 后剩 3 项');
 ls.setItem('unrelated', '1');
 ok(Object.keys(AS.exportAll()).length === 3, 'exportAll 忽略非 toolbox: 前缀的键');
 
+// setMany：多个 key 合并成一次落盘
+const writesBefore = null;
+ok(AS.setMany({ 'm1': 1, 'm2': { a: 1 } }) === true, 'setMany 返回 true');
+ok(AS.get('m1') === 1 && AS.get('m2').a === 1, 'setMany 逐个 key 可读回');
+ok(AS.setMany({}) === true, 'setMany 空对象不报错');
+ok(AS.setMany(null) === false, 'setMany 传 null 返回 false');
+
 /* ---------------- 3. Tauri 模式 ---------------- */
 log('[3] Tauri 模式（invoke）');
 const writes = [];

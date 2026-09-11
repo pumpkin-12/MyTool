@@ -54,6 +54,10 @@ log('[1] normalizeQuestion：清洗与校验');
 let n;
 n = QC.normalizeQuestion({ type: 'choice', text: '  x  ', answer: ' b ', optionA: null, category: null });
 ok(n.answer === 'B', '选择题答案自动转大写', n.answer);
+throws(() => QC.normalizeQuestion({ type: 'choice', text: 'x', answer: 'E' }),
+       '选择题答案不在 A-D 时报错（否则 Excel 填 E 会静默入库且永远判错）', '选择题答案必须是');
+throws(() => QC.normalizeQuestion({ type: 'choice', text: 'x', answer: 'AB' }),
+       '选择题答案填 AB 也报错', '选择题答案必须是');
 ok(n.text === 'x', '题目文本首尾去空白');
 ok(n.category === '' && n.optionA === '', '分类/选项为 null 时默认空字符串');
 

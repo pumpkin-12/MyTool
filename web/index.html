@@ -480,6 +480,25 @@ const AppStore = (function () {
       } catch (e) {}
       return out;
     },
+    /* 批量写入：合并后只落一次盘。一次业务保存常要写多个 key，
+     * 逐个 set 会把「全量 stringify + 全量写盘」重复 N 倍。 */
+    setMany(obj) {
+      if (!obj || typeof obj !== 'object') return false;
+      let n = 0;
+      for (const k in obj) {
+        if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+        if (native) {
+          if (!mem) mem = {};
+          mem[K(k)] = clone(obj[k]);
+        } else {
+          try { localStorage.setItem(K(k), JSON.stringify(obj[k])); }
+          catch (e) { return false; }
+        }
+        n++;
+      }
+      if (native && n) persist();
+      return true;
+    },
     importAll(obj) {
       if (!obj || typeof obj !== 'object') return 0;
       let n = 0;
@@ -600,6 +619,93 @@ async function saveBlob(blob, name) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
   return true;
+}
+
+/* ---------- 应用内对话框 ----------
+ * 不用 window.prompt / window.confirm：
+ *   - Tauri 没实现原生 prompt（官方 issue #4783），桌面端常见行为是直接返回 null；
+ *   - Tauri v2 + WebView2 桌面实测 confirm 是 no-op，不弹框直接返回 true，
+ *     所有「确认后删除/清空」会被静默绕过，属数据丢失隐患。
+ * 所以一律自绘模态框 + Promise，浏览器与桌面同一套代码。
+ * 同一时刻只保留一个遮罩（uiOverlay 会先关掉上一个），cleanup 时统一收掉。 */
+let __modalEl = null;
+function uiOverlay(inner) {
+  if (__modalEl) { __modalEl.remove(); __modalEl = null; }
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:60;display:flex;align-items:center;justify-content:center;';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:20px;width:min(480px,92vw);max-height:86vh;overflow:auto;';
+  card.innerHTML = inner;
+  box.appendChild(card);
+  document.body.appendChild(box);
+  __modalEl = box;
+  return { box: box, card: card };
+}
+function uiCloseModal() { if (__modalEl) { __modalEl.remove(); __modalEl = null; } }
+function uiBtnRow(yesLabel) {
+  return '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">' +
+    '<button class="btn" data-uicancel>取消</button>' +
+    '<button class="btn btn-primary" data-uiok>' + (yesLabel || '确定') + '</button></div>';
+}
+
+/* 确认框 → Promise<boolean>，点遮罩/取消都视为 false */
+function askConfirm(message, okText) {
+  return new Promise(resolve => {
+    const o = uiOverlay(
+      '<div style="font-weight:500;margin-bottom:6px;white-space:pre-wrap;line-height:1.7;">' + esc(message) + '</div>' +
+      uiBtnRow(okText));
+    const done = v => { if (!__modalEl) return; uiCloseModal(); resolve(v); };
+    o.card.querySelector('[data-uicancel]').addEventListener('click', () => done(false));
+    o.card.querySelector('[data-uiok]').addEventListener('click', () => done(true));
+    o.box.addEventListener('click', e => { if (e.target === o.box) done(false); });
+  });
+}
+
+/* 表单框 → Promise<对象|null>。字段：{key,label,type:'text'|'number'|'select'|'checks',options,value,placeholder} */
+function askForm(title, fields) {
+  return new Promise(resolve => {
+    const body = fields.map(f => {
+      if (f.type === 'select') {
+        return '<div style="margin-bottom:12px;"><div class="hint" style="margin-bottom:4px;">' + esc(f.label) + '</div>' +
+          '<select class="field" data-k="' + esc(f.key) + '">' +
+          (f.options || []).map(o => '<option value="' + esc(o.value) + '"' +
+            (String(o.value) === String(f.value) ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
+          '</select></div>';
+      }
+      if (f.type === 'checks') {
+        return '<div style="margin-bottom:12px;"><div class="hint" style="margin-bottom:4px;">' + esc(f.label) + '</div>' +
+          '<div style="display:flex;gap:12px;flex-wrap:wrap;">' + (f.options || []).map(o =>
+            '<label style="font-size:13px;display:flex;gap:5px;align-items:center;cursor:pointer;">' +
+            '<input type="checkbox" data-ck="' + esc(o.value) + '"' +
+            ((f.value || []).indexOf(o.value) >= 0 ? ' checked' : '') + '> ' + esc(o.label) + '</label>').join('') +
+          '</div></div>';
+      }
+      return '<div style="margin-bottom:12px;"><div class="hint" style="margin-bottom:4px;">' + esc(f.label) + '</div>' +
+        '<input class="field" type="' + (f.type || 'text') + '" data-k="' + esc(f.key) + '" value="' +
+        esc(f.value == null ? '' : f.value) + '"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : '') + '></div>';
+    }).join('');
+    const o = uiOverlay('<div style="font-weight:500;margin-bottom:14px;">' + esc(title) + '</div>' + body + uiBtnRow('确定'));
+    const done = v => { if (!__modalEl) return; uiCloseModal(); resolve(v); };
+    o.card.querySelector('[data-uicancel]').addEventListener('click', () => done(null));
+    o.card.querySelector('[data-uiok]').addEventListener('click', () => {
+      const out = {};
+      fields.forEach(f => {
+        if (f.type === 'checks') {
+          const picked = [];
+          o.card.querySelectorAll('[data-ck]').forEach(c => { if (c.checked) picked.push(c.dataset.ck); });
+          out[f.key] = picked;
+        } else {
+          const el = o.card.querySelector('[data-k="' + f.key + '"]');
+          out[f.key] = el ? el.value : '';
+        }
+      });
+      done(out);
+    });
+    o.box.addEventListener('click', e => { if (e.target === o.box) done(null); });
+    const first = o.card.querySelector('input,select');
+    if (first) first.focus();
+  });
 }
 
 /* ---------- 工具注册表 ---------- */
@@ -3272,10 +3378,13 @@ registerTool({
 
     $('.mm-clear').addEventListener('click', () => {
       if (!ta.value) return;
-      if (!window.confirm('清空当前源码？此操作可通过「历史」找回上一版。')) return;
-      ta.value = '';
-      ta.dispatchEvent(new Event('input'));
-      requestRender(true);
+      /* 桌面 WebView 里 window.confirm 是 no-op（直接返回 true），必须换成应用内确认框 */
+      askConfirm('清空当前源码？此操作可通过「历史」找回上一版。').then(ok => {
+        if (!ok) return;
+        ta.value = '';
+        ta.dispatchEvent(new Event('input'));
+        requestRender(true);
+      });
     });
 
     $('.mm-histLoad').addEventListener('click', e => {
@@ -3434,7 +3543,14 @@ const QuizCore = (function () {
     if (TYPES.indexOf(type) < 0) throw new Error('不支持的题型：' + type);
 
     let answer;
-    if (type === 'choice') answer = rawAnswer.toUpperCase();
+    if (type === 'choice') {
+      answer = rawAnswer.toUpperCase();
+      /* 不校验的话，Excel 里答案填 E 会静默入库，而这道题永远判不对。
+       * 注意要用数组 indexOf 而不是字符串 indexOf —— 后者是子串匹配，'AB' 也能混过去 */
+      if (['A', 'B', 'C', 'D'].indexOf(answer) < 0) {
+        throw new Error('选择题答案必须是 A / B / C / D，当前是「' + answer + '」');
+      }
+    }
     else if (type === 'truefalse') answer = normalizeTFStrict(rawAnswer);
     else answer = rawAnswer;
 
@@ -3692,11 +3808,31 @@ registerTool({
     let progress = AppStore.get('quiz:progress', null);
 
     function saveData() {
-      AppStore.set('quiz:questions', questions);
-      AppStore.set('quiz:records', records);
-      AppStore.set('quiz:wrong', wrong);
+      /* 三个 key 合并成一次写盘，避免把「全量 stringify + 全量写盘」重复三遍 */
+      AppStore.setMany({
+        'quiz:questions': questions,
+        'quiz:records': records,
+        'quiz:wrong': wrong
+      });
     }
     function nextQid() { return QuizCore.nextId(questions); }
+
+    /* 从进行中的会话里同步移除已删除的题目。
+     * 不做的话：交卷时 syncWrongOnSubmit 会把已删题的 id 写进错题本，
+     * 界面上看不到（viewWrong 会过滤），但数据在存档里永久残留。 */
+    function removeFromSession(ids) {
+      if (!session) return;
+      const keep = [], ans = [];
+      session.questions.forEach((q, i) => {
+        if (!ids.has(q.id)) {
+          keep.push(q);
+          ans.push(session.answers[i] != null ? session.answers[i] : null);
+        }
+      });
+      session.questions = keep;
+      session.answers = ans;
+      if (session.currentIndex >= keep.length) session.currentIndex = Math.max(0, keep.length - 1);
+    }
 
     /* ---------- 界面状态 ---------- */
     let tab = 'dash';
@@ -3954,38 +4090,52 @@ registerTool({
 
     function commitFree() { /* 自由作答的内容在 input 时已写回，这里仅占位以统一入口 */ }
 
-    function onModeClick(mode) {
+    /* 模式入口。原来用 window.prompt，桌面 WebView 里 prompt 未实现会直接返回 null，
+     * 表现为「点了没反应」；现在统一走应用内表单框。 */
+    async function onModeClick(mode) {
       const cats = QuizCore.categories(questions);
       if (!questions.length) { showToast('题库是空的，先去「题库」导入题目'); return; }
+      const catOptions = [{ value: '', label: '全部分类' }].concat(cats.map(c => ({ value: c, label: c })));
+
       if (mode === 'order' || mode === 'random') {
-        const c = window.prompt(cats.length ? '选择分类（留空=全部）：\n' + cats.join(' / ') : '没有可用的分类，直接开始（全部题目）？', '');
-        if (c === null) return;
-        begin({ mode: mode, category: c && cats.indexOf(c) >= 0 ? c : '' });
+        const v = await askForm(QuizCore.MODE_NAMES[mode], [
+          { key: 'category', label: '分类筛选', type: 'select', options: catOptions, value: '' }
+        ]);
+        if (!v) return;
+        begin({ mode: mode, category: v.category || '' });
+
       } else if (mode === 'exam') {
-        const t = window.prompt('模拟考试：作答题数（1-' + questions.length + '）', String(Math.min(20, questions.length)));
-        if (t === null) return;
-        const mt = window.prompt('限时（分钟，0 = 不限时）', '30');
-        if (mt === null) return;
-        begin({ mode: 'exam', count: parseInt(t, 10), maxTime: Math.round(parseFloat(mt || '0') * 60) });
+        const v = await askForm('模拟考试', [
+          { key: 'count', label: '作答题数（1-' + questions.length + '）', type: 'number',
+            value: String(Math.min(20, questions.length)) },
+          { key: 'minutes', label: '限时（分钟，0 = 不限时）', type: 'number', value: '30' }
+        ]);
+        if (!v) return;
+        begin({
+          mode: 'exam',
+          count: parseInt(v.count, 10),
+          maxTime: Math.round(parseFloat(v.minutes || '0') * 60)
+        });
+
       } else if (mode === 'custom') {
-        const c = window.prompt('分类筛选（留空=全部）：\n' + (cats.join(' / ') || '（无分类）'), '');
-        if (c === null) return;
-        const ts = window.prompt('题型筛选，逗号分隔（choice,truefalse,fill,essay；留空=全部）',
-          'choice,truefalse');
-        if (ts === null) return;
-        const n = window.prompt('题量', '10');
-        if (n === null) return;
-        const rnd = window.prompt('是否随机打乱？y/n', 'y');
-        if (rnd === null) return;
-        const mt = window.prompt('限时（分钟，0 = 不限时）', '0');
-        if (mt === null) return;
+        const v = await askForm('自定义答题', [
+          { key: 'category', label: '分类筛选', type: 'select', options: catOptions, value: '' },
+          { key: 'types', label: '题型（不勾 = 全部题型）', type: 'checks',
+            options: QuizCore.TYPES.map(t => ({ value: t, label: QuizCore.TYPE_LABEL[t] })),
+            value: ['choice', 'truefalse'] },
+          { key: 'count', label: '题量', type: 'number', value: '10' },
+          { key: 'random', label: '随机打乱', type: 'select',
+            options: [{ value: 'y', label: '是' }, { value: 'n', label: '否' }], value: 'y' },
+          { key: 'minutes', label: '限时（分钟，0 = 不限时）', type: 'number', value: '0' }
+        ]);
+        if (!v) return;
         begin({
           mode: 'custom',
-          category: c && cats.indexOf(c) >= 0 ? c : '',
-          types: ts.split(',').map(x => x.trim()).filter(Boolean),
-          count: parseInt(n, 10),
-          random: /^y/i.test(rnd || ''),
-          maxTime: Math.round(parseFloat(mt || '0') * 60)
+          category: v.category || '',
+          types: v.types || [],
+          count: parseInt(v.count, 10),
+          random: v.random !== 'n',
+          maxTime: Math.round(parseFloat(v.minutes || '0') * 60)
         });
       }
     }
@@ -4033,7 +4183,8 @@ registerTool({
         questionIds: session.questions.map(q => q.id),
         answers: session.answers,
         currentIndex: session.currentIndex,
-        elapsed: session.elapsed,
+        /* 不现场算的话，不限时模式下 elapsed 永远是 0 —— 计时器只在 maxTime 存在时才启动 */
+        elapsed: Math.round((Date.now() - session.startTime) / 1000),
         maxTime: session.maxTime,
         startTime: session.startTime
       };
@@ -4043,20 +4194,31 @@ registerTool({
 
     function resumeProgress() {
       if (!progress) return;
-      const list = (progress.questionIds || [])
-        .map(id => questions.find(q => q.id === id))
-        .filter(Boolean);
-      if (!list.length) { showToast('保存的题目已不存在'); progress = null; AppStore.set('quiz:progress', null); render(); return; }
+      const ids = progress.questionIds || [];
+      const saved = progress.answers || [];
+      /* 按 id 配对后再过滤已删除的题。直接按位置切会让答案整体错位：
+       * 存进度之后删过中间某道题，第 3 题的答案就会落到第 2 题头上。 */
+      const pairs = [];
+      for (let i = 0; i < ids.length; i++) {
+        const q = questions.find(x => x.id === ids[i]);
+        if (q) pairs.push({ q: q, a: i < saved.length ? saved[i] : null });
+      }
+      if (!pairs.length) {
+        showToast('保存的题目已不存在');
+        progress = null;
+        AppStore.set('quiz:progress', null);
+        render();
+        return;
+      }
       session = {
         mode: progress.mode,
-        questions: list,
-        answers: (progress.answers || []).slice(0, list.length),
-        currentIndex: Math.min(progress.currentIndex || 0, list.length - 1),
+        questions: pairs.map(p => p.q),
+        answers: pairs.map(p => p.a),
+        currentIndex: Math.min(progress.currentIndex || 0, pairs.length - 1),
         elapsed: progress.elapsed || 0,
         maxTime: progress.maxTime || null,
         startTime: Date.now() - (progress.elapsed || 0) * 1000
       };
-      while (session.answers.length < list.length) session.answers.push(null);
       progress = null;
       AppStore.set('quiz:progress', null);
       result = null;
@@ -4192,22 +4354,26 @@ registerTool({
       root.querySelectorAll('[data-edit]').forEach(b =>
         b.addEventListener('click', () => openForm(questions.find(q => q.id === parseInt(b.dataset.edit, 10)))));
       root.querySelectorAll('[data-del]').forEach(b =>
-        b.addEventListener('click', () => {
+        b.addEventListener('click', async () => {
           const id = parseInt(b.dataset.del, 10);
-          if (!window.confirm('删除这道题？')) return;
+          if (!(await askConfirm('删除这道题？'))) return;
           questions = questions.filter(q => q.id !== id);
           wrong = wrong.filter(w => w.questionId !== id);
+          removeFromSession(new Set([id]));
           saveData(); render();
         }));
     }
 
-    function clearByType() {
+    async function clearByType() {
       const n = questions.filter(q => q.type === bankTab).length;
       if (!n) { showToast('该题型下没有题目'); return; }
-      if (!window.confirm('清空全部 ' + n + ' 道' + QuizCore.TYPE_LABEL[bankTab] + '？此操作不可撤销。')) return;
+      /* 桌面 WebView 里 window.confirm 是 no-op（直接返回 true），
+       * 不换掉的话这里点一下就把几十道题清了，没有任何确认 */
+      if (!(await askConfirm('清空全部 ' + n + ' 道' + QuizCore.TYPE_LABEL[bankTab] + '？此操作不可撤销。', '清空'))) return;
       const ids = new Set(questions.filter(q => q.type === bankTab).map(q => q.id));
       questions = questions.filter(q => q.type !== bankTab);
       wrong = wrong.filter(w => !ids.has(w.questionId));
+      removeFromSession(ids);
       saveData(); render();
     }
 
@@ -4248,12 +4414,13 @@ registerTool({
             '<button class="btn btn-primary" data-fsave>保存</button></div>' +
         '</div>';
       document.body.appendChild(box);
-      box.addEventListener('click', e => { if (e.target === box) box.remove(); });
-      box.querySelector('[data-fcancel]').addEventListener('click', () => box.remove());
+      __modalEl = box;   /* 挂到全局遮罩槽位，切走工具时 cleanup 能收掉 */
+      box.addEventListener('click', e => { if (e.target === box) uiCloseModal(); });
+      box.querySelector('[data-fcancel]').addEventListener('click', () => uiCloseModal());
       box.querySelectorAll('[data-f="type"]').forEach(s =>
         s.addEventListener('change', () => {
           editForm.data.type = s.value;
-          box.remove(); renderForm();
+          uiCloseModal(); renderForm();
         }));
       ['category', 'text', 'optionA', 'optionB', 'optionC', 'optionD', 'answer', 'explanation'].forEach(k => {
         const f = box.querySelector('[data-f="' + k + '"]');
@@ -4302,7 +4469,7 @@ registerTool({
         s.onload = () => window.XLSX ? res(window.XLSX) : rej(new Error('XLSX 未就绪'));
         s.onerror = () => rej(new Error('加载 vendor/xlsx.full.min.js 失败'));
         document.head.appendChild(s);
-      });
+      }).catch(e => { loadXlsx._p = null; throw e; });   /* 失败不缓存，下次还能重试 */
       return loadXlsx._p;
     }
 
@@ -4386,9 +4553,9 @@ registerTool({
         result = null; tab = 'quiz'; render();
       });
       const c = root.querySelector('[data-wrong-clear]');
-      if (c) c.addEventListener('click', () => {
+      if (c) c.addEventListener('click', async () => {
         if (!wrong.length) return;
-        if (!window.confirm('清空错题本？')) return;
+        if (!(await askConfirm('清空错题本？', '清空'))) return;
         wrong = []; saveData(); render();
       });
       root.querySelectorAll('[data-wrong-del]').forEach(b =>
@@ -4428,8 +4595,9 @@ registerTool({
     }
     function bindRecords() {
       const c = root.querySelector('[data-rec-clear]');
-      if (c) c.addEventListener('click', () => {
-        if (!records.length || !window.confirm('清空全部答题记录？')) return;
+      if (c) c.addEventListener('click', async () => {
+        if (!records.length) return;
+        if (!(await askConfirm('清空全部答题记录？', '清空'))) return;
         records = []; saveData(); render();
       });
       root.querySelectorAll('[data-rec-open]').forEach(b =>
@@ -4488,6 +4656,8 @@ registerTool({
 
     return function () {
       stopTimer();
+      /* 表单弹窗挂在 document.body 上，切走工具时必须收掉，否则 DOM 节点和监听器泄漏 */
+      uiCloseModal();
       document.removeEventListener('keydown', onKey);
     };
   }
