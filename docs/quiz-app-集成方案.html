@@ -99,6 +99,11 @@
   </div>
 
   <p>推荐路径：<strong>方案 C（保留 Vue 界面，把数据层本地化）</strong>，分两档走。下面把四个方案的代价摊开。</p>
+
+  <div class="callout danger">
+    <b>同日修正：本文档原推荐方案 C，读了源码之后改为推荐方案 D（重写）。</b>
+    原因是原判断建立在"前端 UI 是真实工作量、后端有 28 KB 逻辑要翻译"这两个印象上，逐个文件看过之后两个印象都不成立。详细依据见第 08 节。第 03–07 节保留原样，作为决策过程的记录。
+  </div>
 </section>
 
 <section>
@@ -220,6 +225,10 @@
 <section>
   <h2><span class="n">04</span>推荐路线：方案 C，分两档</h2>
 
+  <div class="callout warn">
+    本节推荐已被第 08 节修正。<strong>方案 C 的"分两档"步骤本身仍然成立</strong>（先本地化数据层、再接进工具箱），但第 1 档之后的走向应当直接进入重写，而不是长期停留在 iframe 形态。
+  </div>
+
   <div class="phase p0">
     <div class="phase-h"><span class="badge">第 0 档</span><strong>让 quiz-app 自己先能存住数据</strong></div>
     <p class="goal">和工具箱无关，但无论最后选哪个方案都得做。目标是：<code>java -jar</code> 单跑，重启后题库和记录还在。</p>
@@ -326,7 +335,7 @@
     <tr>
       <td>1</td>
       <td>走哪个方案</td>
-      <td>建议 <strong>C</strong>。如果你更在意"工具箱必须还是那个 4 MB 的小东西、风格必须统一"，那就选 <strong>D</strong>（但 UI 全要重做）。如果你的目标是"尽快用上、Java 代码一行都不想动"，选 <strong>A</strong>，代价是体积涨到约 100 MB。</td>
+      <td><strong>已修正为建议 D（重写）</strong>，理由见第 08 节。只在"必须尽快用上、且坚决不碰界面代码"时才退选 B。A 除了体积涨到约 95 MB 之外没有别的优势。</td>
     </tr>
     <tr>
       <td>2</td>
@@ -348,6 +357,97 @@
   <div class="callout">
     第 1 项是主决策，定了我就能往下做。第 2–4 项你都可以回「按你建议的来」。
   </div>
+</section>
+
+<section>
+  <h2><span class="n">08</span>修正 · 为什么我现在更推荐重写</h2>
+
+  <p>原判断建立在两个印象上：<em>「前端 UI 是真实工作量，重写是浪费」</em>和<em>「后端有约 28 KB 逻辑要翻译」</em>。逐个文件读过之后，<strong>两个印象都不成立</strong>。</p>
+
+  <h3>一、后端要搬的不是 28 KB Java，而是大约 200 行真实规则</h3>
+
+  <p>我把 4 个 Service 按「去掉 import / 空行 / 注解 / 注释后的实义行数」统计了一遍，再逐个读内容：</p>
+
+  <table>
+    <tr><th>文件</th><th>总行</th><th>实义行</th><th>其中真正的领域规则</th></tr>
+    <tr><td><code>QuizService</code></td><td>366</td><td>291</td><td>约 90–110 行</td></tr>
+    <tr><td><code>QuestionService</code></td><td>140</td><td>99</td><td>约 40 行</td></tr>
+    <tr><td><code>StatsService</code></td><td>90</td><td>68</td><td>约 40 行</td></tr>
+    <tr><td><code>WrongQuestionService</code></td><td>54</td><td>30</td><td>约 15 行</td></tr>
+    <tr style="background:#f7faff"><td><strong>合计</strong></td><td>650</td><td>488</td><td><strong>约 185–205 行</strong></td></tr>
+  </table>
+
+  <p>剩下的几百行是什么？<strong>五参数构造器注入、DTO ↔ 实体映射、Repository 调用、<code>JsonProcessingException</code> 包装、响应对象逐字段赋值。</strong>这些东西存在的唯一理由是「前后端分离 + ORM」——在一个本地单用户应用里没有网络边界，它们全部消失。</p>
+
+  <p>真正要保住、也最容易在重写时漏掉的规则只有这么几条：</p>
+  <ul>
+    <li><strong>抽题策略</strong>：分类过滤 → 题型过滤（先校验题型合法）→ 四种模式。其中 <code>exam</code> 洗牌后取前 N、<code>random</code> 全洗牌、<code>custom</code> 可选洗牌后取前 N、<code>order</code> 保持原序；题量都要 <code>max(1, min(count, size))</code> 夹紧。</li>
+    <li><strong>可判题判定</strong>：只有 <code>choice</code> 和 <code>truefalse</code> 判对错，<code>fill</code> / <code>essay</code> 不判。</li>
+    <li><strong><code>normalizeTrueFalseAnswer</code></strong>：把 <code>对 / 正确 / TRUE / T</code> 统一归一成 <code>A</code>，其余一律算 <code>B</code>。这是带历史数据兼容的属性，<strong>重写最容易漏</strong>——漏了就会让判断题全部判错。</li>
+    <li><strong>计分分母只算可判题</strong>：<code>score = round(correct × 100 ÷ judged)</code>，填空和简答不拉低正确率。</li>
+    <li><strong>错题本同步时机有两处</strong>：单题提交时（答对则移除、答错则计数 +1），以及<strong>交卷时把未答的可判题也补进错题本</strong>。后者很容易漏。</li>
+  </ul>
+
+  <div class="callout">
+    <b>一个有意思的发现：</b>后端自己已经在用「JSON 塞进数据库列」的写法——<code>session.questionIds</code>、<code>session.answers</code>、<code>record.answerDetails</code> 全都是 Jackson 序列化成字符串存进 TEXT 列。也就是说<strong>这个应用的数据模型本来就是 JSON</strong>。搬进工具箱的存档不是一次迁移，而是回归它天然的形态。
+  </div>
+
+  <h3>二、前端那 1.8 万字节的"工作量"，大半是 Element UI 的声明式胶水</h3>
+
+  <p>按 template / script / style 拆开看几个主要界面：</p>
+
+  <table>
+    <tr><th>文件</th><th>总行</th><th>template</th><th>script</th><th>template 里含 <code>el-</code> 组件的行</th></tr>
+    <tr><td><code>BankPanel.vue</code></td><td>418</td><td>156</td><td>260</td><td>62（占 template 40%）</td></tr>
+    <tr><td><code>QuizPanel.vue</code></td><td>325</td><td>92</td><td>221</td><td>19</td></tr>
+    <tr><td><code>Dashboard.vue</code></td><td>113</td><td>69</td><td>42</td><td>22</td></tr>
+    <tr><td><code>QuestionCard.vue</code></td><td>191</td><td>89</td><td>73</td><td>6</td></tr>
+    <tr><td><code>Layout.vue</code></td><td>108</td><td>56</td><td>31</td><td>13</td></tr>
+  </table>
+
+  <p><code>BankPanel</code> 那个"18 KB"打开一看，几乎全是 <code>el-card</code> / <code>el-select</code> / <code>el-table</code> / <code>el-table-column</code> / <code>el-dialog</code> / <code>el-upload</code> / <code>el-form</code> 这些组件标签的声明式堆叠。<strong>真正的领域 UI 只有四件事</strong>：按题型分 4 个 Tab、一个工具栏（导入 / 模板 / 添加 / 清空）、一张表（只有选择题多出 A/B/C/D 四列，靠 <code>v-if="tab.key === 'choice'"</code> 控制）、两个弹窗（导入、增删改）。</p>
+
+  <p>而你的工具箱已经有自己的一套克制设计：<code>--accent</code> 蓝、<code>.field</code> / <code>.btn</code> / <code>.row</code> / <code>.note-card</code>、13px 字号、浅色扁平。重写一遍表格和表单，比扛着 1.14 MB 的 Element UI 运行时去适配它要划算。</p>
+
+  <h3>三、Excel 这个唯一的硬依赖，成本比我以为的低</h3>
+
+  <p>我把 <code>node_modules</code> 翻了一遍：SheetJS 的可离线分发构建 <code>xlsx.full.min.js</code> 是 <strong>861 KB</strong>。放进 <code>web/vendor/</code> 就行——作为参照，<code>mermaid.min.js</code> 已经占了 3.5 MB。<strong>不需要退化成 CSV，你"用 Excel 出题库"的工作流可以完整保留。</strong></p>
+
+  <h3>四、方案 C 的真正问题是它会长期悬在那里</h3>
+
+  <p>C 的收益（复用 UI）是眼前的，代价（仓库里多一套 Vue + 构建链、和工具箱"零构建单文件"的约定长期冲突）是持续的。更麻烦的是：<strong>走 C 之后，迁移到 D 的动因会一直存在，但永远不会被排期</strong>——因为"已经能用了"。结果就是工具箱里永久住着一个长得不像自己、还要跟着 npm 一起升级的 iframe。</p>
+
+  <p>而 <strong>D 是唯一不破坏"零构建"硬约定的方案</strong>，结束后 quiz 就和实习日志、画板、Mermaid 完全同质。</p>
+
+  <h3>五、重写的最大风险，有现成的对冲手段</h3>
+
+  <p>重写最怕的是丢业务规则。但 <code>QuizServiceTest.java</code>（31 KB）和 <code>逻辑测试报告.md</code>（26 KB）就是现成的验收清单，逐条翻译成 Node 断言即可。这套办法在同一天已经验证过有效——工具箱那次就是靠把 <code>AppStore</code> 源码抠进 Node 的 <code>vm</code> 跑双模式断言，才抓住了写盘竞态和失败不可见两个问题。</p>
+
+  <h3>修正后的推荐路线</h3>
+
+  <div class="phase p0">
+    <div class="phase-h"><span class="badge">第 0 档</span><strong>在 quiz-app 里把领域逻辑抽成与框架无关的纯 JS</strong></div>
+    <p class="goal">先不碰界面。新增 <code>frontend/src/core/</code>（抽题 / 判题 / 计分 / 错题 / 统计），把 <code>QuizServiceTest</code> 的用例翻成 Node 断言，在 quiz-app 仓库里跑绿。</p>
+    <p>这一步的价值在于：<strong>逻辑正确性在搬进工具箱之前就被单测锁死了</strong>。之后界面重写就纯粹是体力活，改错了会立刻被测试抓住。Vue 界面此时照旧调用这层 core，可以继续用浏览器调试验证。</p>
+  </div>
+
+  <div class="phase p1">
+    <div class="phase-h"><span class="badge">第 1 档</span><strong>搬进工具箱，配 vanilla 界面</strong></div>
+    <p class="goal">core 目录原样搬入 <code>web/index.html</code>（或作为独立 <code>js</code> 文件），界面按工具箱现有风格重写：题库管理（4 个题型 Tab）、答题面板、结果页、错题本、答题记录、成绩统计、仪表盘。</p>
+    <ul>
+      <li>数据落在 AppStore，key 前缀 <code>toolbox:quiz:</code>。</li>
+      <li>Excel 导入导出：vendor 一份 <code>xlsx.full.min.js</code>（861 KB）。</li>
+      <li>注册为第四个工具，首页加卡片图标。</li>
+    </ul>
+  </div>
+
+  <div class="callout warn">
+    <b>要接受的代价：</b>quiz 会成为工具箱里最大的一个工具，<code>index.html</code> 从约 3400 行涨到 4500+ 行。<strong>"单文件"到这里开始变成负担</strong>——建议同时把 quiz 的数据拆成独立存档文件（正好是待办里第 2 档「按 key 拆分」要解决的事）。
+  </div>
+
+  <p><strong>规模估计</strong>（按读到的代码反推）：领域逻辑约 250–350 行 JS，界面约 600–900 行，Excel 封装约 100–150 行，合计 <strong>1000–1400 行</strong>。作为参照，画板现在约 1400 行。</p>
+
+  <p>至于第 0 档之前那件事——<strong>quiz-app 目前还在用 H2 内存库，先让它能存住数据</strong>，以及把那 48 项未提交改动提交掉。</p>
 </section>
 
 <footer>quiz-app → 个人工具箱 · 集成方案 · 2026-09-11</footer>
