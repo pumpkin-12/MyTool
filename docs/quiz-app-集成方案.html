@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quiz-app 集入个人工具箱 · 方案</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #ffffff; --text: #1f2328; --muted: #6b7280;
+    --border: #e5e7eb; --accent: #2563eb; --ok: #0f6e56; --warn: #854f0b;
+    --err: #a32d2d; --code-bg: #f2f4f7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14.5px; line-height: 1.75; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+  header.doc { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 28px 30px; margin-bottom: 26px; }
+  header.doc h1 { font-size: 23px; font-weight: 500; margin: 0 0 10px; }
+  header.doc .sub { color: var(--muted); font-size: 13px; margin: 0; }
+  .meta { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .meta span { font-size: 12px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 999px; padding: 3px 11px; background: #fafbfc; }
+  section { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 24px 30px; margin-bottom: 18px; }
+  h2 { font-size: 17px; font-weight: 500; margin: 0 0 16px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 10px; }
+  h2 .n { font-size: 12px; color: var(--accent); background: #eff5ff;
+    border-radius: 6px; padding: 2px 8px; font-weight: 400; flex: none; }
+  h3 { font-size: 14.5px; font-weight: 500; margin: 24px 0 10px; }
+  h3:first-of-type { margin-top: 6px; }
+  h4 { font-size: 13.5px; font-weight: 500; margin: 16px 0 8px; color: var(--muted); }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  code { font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 12.5px;
+    background: var(--code-bg); padding: 1.5px 6px; border-radius: 5px; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; margin: 0 0 16px; line-height: 1.6; }
+  pre code { background: none; padding: 0; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 0 0 16px; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: #fafbfc; font-weight: 500; color: var(--muted); font-size: 12.5px; }
+  .callout { border-left: 3px solid var(--accent); background: #f5f9ff;
+    border-radius: 0 8px 8px 0; padding: 13px 17px; margin: 0 0 16px; font-size: 13.5px; }
+  .callout.warn { border-left-color: #ef9f27; background: #fffaf0; }
+  .callout.danger { border-left-color: #e24b4a; background: #fff6f6; }
+  .opt { border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px;
+    margin-bottom: 14px; background: #fcfcfd; }
+  .opt.rec { border-color: #2563eb; background: #f7faff; }
+  .opt-h { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  .opt-h .badge { font-size: 11.5px; padding: 2px 10px; border-radius: 6px;
+    background: #888780; color: #fff; flex: none; }
+  .opt.rec .opt-h .badge { background: var(--accent); }
+  .opt-h strong { font-weight: 500; font-size: 15px; }
+  .opt-h .rec-tag { font-size: 11.5px; color: var(--accent); border: 1px solid #b5d4f4;
+    background: #e6f1fb; border-radius: 6px; padding: 1px 8px; }
+  .opt .goal { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .score { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; margin-top: 10px;
+    padding-top: 10px; border-top: 1px dashed var(--border); color: var(--muted); }
+  .score b { font-weight: 500; color: var(--text); }
+  .kv td:first-child { width: 200px; }
+  .phase { border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px;
+    margin-bottom: 16px; background: #fcfcfd; }
+  .phase-h { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .phase-h .badge { font-size: 11.5px; padding: 2px 10px; border-radius: 6px;
+    background: var(--accent); color: #fff; flex: none; }
+  .phase.p1 .phase-h .badge { background: #534ab7; }
+  .phase.p2 .phase-h .badge { background: #888780; }
+  .phase-h strong { font-weight: 500; font-size: 15px; }
+  .phase .goal { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  footer { color: var(--muted); font-size: 12.5px; text-align: center; padding-top: 10px; }
+  @media print { body { background: #fff; }
+    section, header.doc { border: none; padding: 0; margin-bottom: 22px; }
+    .opt, .phase { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>quiz-app 集入个人工具箱 · 方案</h1>
+  <p class="sub">把 <code>D:\Ai-file\quiz-app</code>（Spring Boot + Vue 2 刷题系统）作为第四个工具接入本地工具箱。</p>
+  <div class="meta">
+    <span>2026-09-11</span>
+    <span>源：quiz-app（2 次提交 / 48 项未提交改动）</span>
+    <span>目标：MyTool（Tauri 2 · 便携版 3.93 MB）</span>
+  </div>
+</header>
+
+<section>
+  <h2><span class="n">01</span>结论先行</h2>
+
+  <p>这次和前三个工具（实习日志 / 画板 / Mermaid）<strong>不是同一类问题</strong>。那三个天生就是「一段 JS + 一个本地存档」，塞进去就行。quiz-app 是一个<strong>服务端应用</strong>：Spring Boot 后端 + Vue 2 SPA + 数据库。</p>
+
+  <div class="callout danger">
+    <b>先说一句不太顺耳的话：</b>quiz-app 现在<strong>根本不持久化数据</strong>。<code>application.yml</code> 里 dev 环境的库是 <code>jdbc:h2:mem:quizdb</code>——内存模式，注释自己都写着「应用重启后数据丢失」。所以<strong>无论你选哪个集成方案，第一步都不是集成，而是先让它把数据存下来</strong>。否则接进工具箱也只是一个每次重启就清空的刷题器。
+  </div>
+
+  <p>推荐路径：<strong>方案 C（保留 Vue 界面，把数据层本地化）</strong>，分两档走。下面把四个方案的代价摊开。</p>
+</section>
+
+<section>
+  <h2><span class="n">02</span>两边的架构，摆在一起看</h2>
+
+  <table>
+    <tr><th style="width:130px">维度</th><th>个人工具箱 MyTool</th><th>quiz-app</th></tr>
+    <tr>
+      <td><strong>形态</strong></td>
+      <td>纯客户端。Tauri 2 壳 + 一个零构建单文件 <code>web/index.html</code></td>
+      <td><strong>服务端</strong>。Spring Boot 2.7.18（Java 11）跑在 8081，Vue SPA 由它托管</td>
+    </tr>
+    <tr>
+      <td><strong>数据</strong></td>
+      <td>单个 JSON 存档 <code>%APPDATA%\com.lijiazhen.toolbox\store.json</code>，key 前缀 <code>toolbox:&lt;tool&gt;:&lt;field&gt;</code></td>
+      <td>dev 用 <strong>H2 内存库</strong>（重启即丢）；prod 用 <strong>MySQL</strong>（需外部服务）</td>
+    </tr>
+    <tr>
+      <td><strong>体量</strong></td>
+      <td>便携版 <strong>3.93 MB</strong> / 安装包 1.92 MB</td>
+      <td>fat jar <strong>43.39 MB</strong>（已含前端静态文件）+ 需要一个 JRE</td>
+    </tr>
+    <tr>
+      <td><strong>前端</strong></td>
+      <td>vanilla JS 单文件，约 3400 行，无框架无构建</td>
+      <td>Vue 2.7 + Vue Router 3 + Vuex 3 + Element UI 2.15，Vue CLI 构建，dist 1.89 MB（不含 sourcemap）</td>
+    </tr>
+    <tr>
+      <td><strong>接口面</strong></td>
+      <td>无（工具直接读写 AppStore）</td>
+      <td>5 个 Controller，约 <strong>19 个 REST 端点</strong></td>
+    </tr>
+    <tr>
+      <td><strong>硬约定</strong></td>
+      <td><strong>不引入 Vite/Webpack 等打包器</strong>，前端永远是零构建单文件</td>
+      <td>已经依赖 Webpack 构建链</td>
+    </tr>
+  </table>
+
+  <h3>三处结构性错位</h3>
+  <ol>
+    <li><strong>进程模型</strong>：工具箱是单进程单窗口；quiz-app 要额外拉一个 JVM。</li>
+    <li><strong>数据归属</strong>：工具箱的一切都在那份存档里，能用首页「导出全部数据」整体搬家；quiz-app 的数据在数据库里，跟工具箱的存档体系毫无关系。</li>
+    <li><strong>体量量级</strong>：把一个 43 MB 的 jar 加一个 JRE 塞进一个 3.93 MB 的应用，等于换了种软件形态。</li>
+  </ol>
+
+  <h3>但也有三个对集成非常有利的事实</h3>
+  <div class="callout">
+    <p style="margin:0 0 8px"><b>1. 前端只有一个 API 收口。</b><code>frontend/src/api/request.js</code> 是一个 axios 实例（<code>baseURL: '/api'</code> + 响应拦截器解包 <code>res.data</code>），所有 <code>api/*.js</code> 都走它。要"换掉后端"，只需要替换这一个文件的导出。</p>
+    <p style="margin:0 0 8px"><b>2. 路由是 hash 模式。</b><code>new VueRouter({ routes })</code> 没有设 <code>mode: 'history'</code>，所以用的是 <code>#/dashboard</code> 这种形式——静态文件直接就能跑，不需要服务器做 URL 重写；放进 iframe 后它有自己的 hash 命名空间，<strong>不会和工具箱自己的 <code>#tool/&lt;id&gt;</code> 路由打架</strong>。</p>
+    <p style="margin:0"><b>3. Excel 导入在后端没有参与。</b><code>importQuestions(questions)</code> 传的是<strong>解析好的数组</strong>，<code>xlsx</code> 库在前端浏览器里解析。所以后端的 Java 代码一行都不碰 Excel，本地化时这部分完全不用管。</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">03</span>四个方案</h2>
+
+  <div class="opt">
+    <div class="opt-h"><span class="badge">方案 A</span><strong>Sidecar：整套搬进去</strong></div>
+    <p class="goal">用 Tauri 的 <code>bundle.externalBin</code> 把 Java 启动器 + jar 作为子进程打包，应用启动时拉起后端，工具界面用 iframe 指向 <code>localhost:8081</code>。</p>
+    <ul>
+      <li>Java 逻辑、Vue 界面<strong>一行都不用改</strong>。</li>
+      <li>应用体积从 3.93 MB 涨到 <strong>约 100 MB</strong>（43 MB jar + jlink 精简 JRE 约 45–55 MB）。<strong>涨 25 倍。</strong></li>
+      <li>要额外处理：端口被占用、iframe 要等后端 ready 再加载、退出时确保子进程被杀干净、H2 嵌入式文件库的多进程锁冲突。</li>
+      <li>Tauri 2 的 sidecar 需要开 shell 插件权限，能力模型要放宽。</li>
+    </ul>
+    <div class="score"><span>工作量 <b>小</b></span><span>体积代价 <b>+95 MB</b></span><span>数据归属 <b>工具箱之外</b></span><span>风格一致性 <b>差</b></span></div>
+  </div>
+
+  <div class="opt">
+    <div class="opt-h"><span class="badge">方案 B</span><strong>外置后端，工具箱只挂入口</strong></div>
+    <p class="goal">后端 jar 保持独立运行（手动启，或做成开机自启），工具箱里加一个工具，内容就是一个指向 <code>http://localhost:8081</code> 的 iframe。</p>
+    <ul>
+      <li>改动最小，工具箱体积不变。</li>
+      <li>但严格说这<strong>不是"加入"</strong>，是"挂了个快捷方式"：后端没起来就白屏，用户得知道先去启服务。</li>
+      <li>数据仍在数据库里，和工具箱的存档、导出、迁移体系完全脱节。</li>
+      <li>适合"先看看效果"的过渡验证，不适合当终态。</li>
+    </ul>
+    <div class="score"><span>工作量 <b>极小</b></span><span>体积代价 <b>0</b></span><span>数据归属 <b>工具箱之外</b></span><span>风格一致性 <b>差</b></span></div>
+  </div>
+
+  <div class="opt rec">
+    <div class="opt-h"><span class="badge">方案 C</span><strong>保留 Vue 界面，把数据层本地化</strong><span class="rec-tag">推荐</span></div>
+    <p class="goal">前端 UI 全部复用，砍掉 Spring Boot。把 <code>request.js</code> 一个文件换成本地实现（那 19 个端点用 JS 重写），数据读写走工具箱的 AppStore。构建出的 dist 放进 <code>web/quiz/</code>，工具箱里用 iframe 承载。</p>
+    <ul>
+      <li><strong>UI 工作量全部保住</strong>——<code>BankPanel.vue</code> 18 KB、<code>QuizPanel.vue</code> 12 KB，加上 6 个 view、6 个 component，重写是纯浪费。</li>
+      <li>Java 那部分要翻译成 JS：QuizService 15.9 KB + QuestionService 5.5 KB + StatsService 4 KB + WrongQuestionService 1.9 KB，合计约 28 KB 逻辑。<strong>而且 Java 版可以留着当规格说明书</strong>，<code>QuizServiceTest.java</code>（31 KB）和 <code>逻辑测试报告.md</code>（26 KB）直接就是现成的验收用例。</li>
+      <li>体积只增加 <strong>1.89 MB</strong>（dist 去掉 sourcemap 后；含 map 是 8.73 MB，别直接拷）。作为参照：<code>vendor/mermaid.min.js</code> 已经占了 3.5 MB，同一个量级。</li>
+      <li>数据真正并入统一存档——刷题、实习日志、画板共用一份文件，共用首页的「导出全部数据」。<strong>这是唯一能做到"真正加进工具箱"的方案。</strong></li>
+      <li>iframe 天然隔离 Element UI 的 206 KB CSS，不会污染工具箱现有样式。</li>
+    </ul>
+    <div class="score"><span>工作量 <b>中</b></span><span>体积代价 <b>+1.9 MB</b></span><span>数据归属 <b>工具箱内</b></span><span>风格一致性 <b>中（iframe 独立）</b></span></div>
+    <div class="callout warn" style="margin:14px 0 0">
+      <b>需要你点头的一点：</b>工具箱的硬约定是「不引入打包器」。方案 C 会让仓库里出现一个 Vue CLI 的构建产物。折中办法是把 Vue <strong>源码留在 quiz-app 仓库</strong>，工具箱只收 dist，当作 vendor 资源对待——和 <code>mermaid.min.js</code> 同级，不在工具箱里跑 npm。要不要接受这个破例，你定。
+    </div>
+  </div>
+
+  <div class="opt">
+    <div class="opt-h"><span class="badge">方案 D</span><strong>纯前端重写</strong></div>
+    <p class="goal">彻底丢开 Vue 和 Element UI，用 vanilla JS 按工具箱现有风格重写，逻辑照 Java 抄。</p>
+    <ul>
+      <li>结果最一致：真·单文件、零依赖、和其他三个工具浑然一体，没有 iframe。</li>
+      <li>但银行面板那种「题型 Tab + 分类管理 + 批量编辑 + Excel 导入」的界面要全部重做，工作量最大。</li>
+      <li>如果方案 C 走顺了，其实可以<strong>后续再把 C 演进成 D</strong>（先把数据层本地化，再逐步把界面搬出来）。两者不冲突。</li>
+    </ul>
+    <div class="score"><span>工作量 <b>大</b></span><span>体积代价 <b>0</b></span><span>数据归属 <b>工具箱内</b></span><span>风格一致性 <b>最好</b></span></div>
+  </div>
+
+  <h3>横向对比</h3>
+  <table>
+    <tr><th>方案</th><th>工具箱体积</th><th>数据在哪</th><th>能否整体导出</th><th>主要代价</th></tr>
+    <tr><td>A Sidecar</td><td>3.93 MB → <strong>≈100 MB</strong></td><td>H2 文件 / MySQL</td><td>否</td><td>多进程、端口、时序、体积</td></tr>
+    <tr><td>B 外置入口</td><td>不变</td><td>H2 文件 / MySQL</td><td>否</td><td>后端没起来就白屏</td></tr>
+    <tr style="background:#f7faff"><td><strong>C 数据层本地化</strong></td><td>3.93 → <strong>≈5.9 MB</strong></td><td><strong>工具箱存档</strong></td><td><strong>是</strong></td><td>翻译约 28 KB 领域逻辑</td></tr>
+    <tr><td>D 纯前端重写</td><td>3.93 → ≈4.1 MB</td><td><strong>工具箱存档</strong></td><td><strong>是</strong></td><td>UI 全部重做</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2><span class="n">04</span>推荐路线：方案 C，分两档</h2>
+
+  <div class="phase p0">
+    <div class="phase-h"><span class="badge">第 0 档</span><strong>让 quiz-app 自己先能存住数据</strong></div>
+    <p class="goal">和工具箱无关，但无论最后选哪个方案都得做。目标是：<code>java -jar</code> 单跑，重启后题库和记录还在。</p>
+    <ol>
+      <li><strong>dev 的 H2 改成文件模式。</strong>把 <code>jdbc:h2:mem:quizdb</code> 换成 <code>jdbc:h2:file:${user.home}/.quiz-app/quizdb</code>，数据就落到磁盘了。<strong>一行改动。</strong></li>
+      <li><strong>注意 H2 文件库的锁。</strong>嵌入式模式同一时刻只允许一个进程打开。如果以后真走方案 A（sidecar），工具箱和手动启的后端不能同时开着同一个库。</li>
+      <li><strong>先把那 48 项未提交改动提交掉。</strong>quiz-app 目前只有 2 个提交、48 项未提交。集成过程要动 <code>request.js</code> 和构建产物，不清干净没法分辨哪块是谁改的。</li>
+    </ol>
+  </div>
+
+  <div class="phase p1">
+    <div class="phase-h"><span class="badge">第 1 档</span><strong>本地 API 适配层</strong></div>
+    <p class="goal">在 quiz-app 仓库里把后端换成 JS 实现，前端仍然是一套正常的 Vue 应用，只是数据不再走 HTTP。</p>
+    <ol>
+      <li>新增 <code>frontend/src/api/local.js</code>，实现全部 19 个端点的本地版本。接口形状对齐 Java：返回 <code>{ code: 200, message, data }</code>，这样现有的响应拦截器不用改。</li>
+      <li><code>request.js</code> 改成二选一分发：检测到本地模式走 <code>local.js</code>，否则走原来的 axios。保留 axios 分支是为了你以后还能跑前后端分离的开发模式。</li>
+      <li>数据落到工具箱的 AppStore，key 用 <code>toolbox:quiz:questions</code> / <code>:sessions</code> / <code>:records</code> / <code>:wrong</code> 这类前缀，和现有三个工具并列。</li>
+      <li>用 Java 的测试当验收：<code>QuizServiceTest</code>（31 KB）、<code>QuestionServiceTest</code>、<code>StatsServiceTest</code> 里的用例逐条对到 JS 实现上。</li>
+    </ol>
+  </div>
+
+  <div class="phase p2">
+    <div class="phase-h"><span class="badge">第 2 档</span><strong>打包进工具箱</strong></div>
+    <p class="goal">让「刷题」出现在工具箱首页，点进去就能用。</p>
+    <ol>
+      <li><code>npm run build</code>，只把非 <code>.map</code> 的文件拷到 <code>web/quiz/</code>（1.89 MB，别把 6.8 MB 的 sourcemap 一起带进去）。</li>
+      <li>在 <code>web/index.html</code> 的 <code>registry</code> 里 <code>registerTool</code> 第四个工具，<code>mount()</code> 渲染一个 <code>&lt;iframe src="quiz/index.html"&gt;</code>。</li>
+      <li>首页卡片沿用现有风格加一个图标（颜色和图标可复用 <code>#7F77DD</code> 那套紫色系）。</li>
+    </ol>
+    <div class="callout">
+      <b>iframe 的一个好处：</b>Element UI 的 CSS 和工具箱自己的 CSS 完全隔离，不会互相污染。这也是为什么选 iframe 而不是直接把 Vue 应用内联进来——两套 UI 框架的样式放在同一个 document 里迟早出事。
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">05</span>要翻译的 19 个端点</h2>
+
+  <p>这是方案 C 的核心工作量清单，全部来自 5 个 Controller。响应体统一是 <code>{code, message, data}</code>。</p>
+
+  <table>
+    <tr><th style="width:150px">前缀</th><th>端点</th></tr>
+    <tr>
+      <td><code>/api/questions</code></td>
+      <td><code>GET /</code> 列表 · <code>GET /{id}</code> · <code>POST /</code> 新建 · <code>PUT /{id}</code> 改 · <code>DELETE /{id}</code> 删 · <code>DELETE /all</code> 清空 · <code>POST /import</code> 批量导入 · <code>GET /categories</code> 分类列表</td>
+    </tr>
+    <tr>
+      <td><code>/api/quiz</code></td>
+      <td><code>POST /start</code> 开始 · <code>POST /answer</code> 提交单题 · <code>POST /submit</code> 交卷 · <code>POST /progress</code> 保存进度 · <code>GET /session/check</code> 检查未完成会话 · <code>POST /resume/{key}</code> 继续 · <code>DELETE /session/{key}</code> 放弃</td>
+    </tr>
+    <tr>
+      <td><code>/api/wrong-questions</code></td>
+      <td><code>GET /</code> 列表 · <code>DELETE /{questionId}</code> · <code>DELETE /all</code></td>
+    </tr>
+    <tr>
+      <td><code>/api/stats</code></td>
+      <td><code>GET /</code> 统计汇总</td>
+    </tr>
+    <tr>
+      <td><code>/api/records</code></td>
+      <td><code>GET /</code> 列表 · <code>GET /{id}</code> 详情 · <code>DELETE /</code></td>
+    </tr>
+  </table>
+
+  <p>其中真正有复杂度的是 <code>POST /quiz/start</code> 和 <code>POST /quiz/answer</code>——随机抽题要支持「按分类筛选 + 按题型筛选 + 数量 + 随机/顺序 + 限时」的组合，判题逻辑要区分四种题型（<code>choice</code> / <code>truefalse</code> / <code>fill</code> / <code>essay</code>，后两种不自动判题）。这部分照 <code>QuizService.java</code> 逐条翻译即可。</p>
+</section>
+
+<section>
+  <h2><span class="n">06</span>几个要提前想清楚的技术点</h2>
+
+  <table>
+    <tr><th style="width:180px">问题</th><th>说明与对策</th></tr>
+    <tr>
+      <td><strong>存档体量</strong></td>
+      <td>工具箱现在每次保存都会把<strong>整个存档</strong> stringify 一遍再写盘。题库如果上千题，假设每题 300 字节 JSON 就是 300 KB，再加上不断累积的答题记录和错题，这份存档会长得很快，连带影响实习日志和画板的保存性能。<strong>建议趁这次把 quiz 的数据拆成独立文件</strong>——这正好就是工具箱第 2 档「存档按 key 拆分」要解决的问题，两件事可以合并做。</td>
+    </tr>
+    <tr>
+      <td><strong>localStorage 同源</strong></td>
+      <td>iframe 和父页面都是 <code>tauri://localhost</code>，<strong>共享同一个 localStorage</strong>。所以如果本地适配层图省事直接用 localStorage，要么统一走 AppStore（父页的存储层），要么给 key 加独立前缀，否则会和工具箱的 <code>toolbox:*</code> 体系互相干扰。</td>
+    </tr>
+    <tr>
+      <td><strong>别拷 sourcemap</strong></td>
+      <td><code>frontend/dist</code> 含 map 是 8.73 MB，去掉之后 1.89 MB。差的 6.8 MB 全是调试用的 sourcemap，发布时没有价值。构建时可以在 <code>vue.config.js</code> 里关掉 <code>productionSourceMap</code>。</td>
+    </tr>
+    <tr>
+      <td><strong>Element UI 体积</strong></td>
+      <td><code>chunk-vendors.js</code> 1.14 MB（Vue + Element UI + Vuex + axios + xlsx 全在里面）、<code>562.js</code> 437 KB（xlsx 单独分包）、CSS 206 KB。想瘦身可以做体积优化，但不是这一步的重点。</td>
+    </tr>
+    <tr>
+      <td><strong>CSP 与 iframe</strong></td>
+      <td>Tauri 配置里 <code>csp: null</code>（不注入策略），所以 iframe 加载本地静态文件不受限，不用额外开权限。</td>
+    </tr>
+    <tr>
+      <td><strong>开发态怎么调</strong></td>
+      <td>内嵌后调试 iframe 里的 Vue 应用不太方便。<strong>建议保留两条路</strong>：<code>request.js</code> 的双分支让 quiz-app 依然能 <code>npm run serve</code> + 后端分开跑，用浏览器调；工具箱里跑的是本地模式。两边共用一个界面代码库。</td>
+    </tr>
+  </table>
+</section>
+
+<section>
+  <h2><span class="n">07</span>需要你拍板的四件事</h2>
+  <table>
+    <tr><th style="width:40px">#</th><th style="width:210px">决策点</th><th>选项与建议</th></tr>
+    <tr>
+      <td>1</td>
+      <td>走哪个方案</td>
+      <td>建议 <strong>C</strong>。如果你更在意"工具箱必须还是那个 4 MB 的小东西、风格必须统一"，那就选 <strong>D</strong>（但 UI 全要重做）。如果你的目标是"尽快用上、Java 代码一行都不想动"，选 <strong>A</strong>，代价是体积涨到约 100 MB。</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>是否接受仓库里出现 Vue 构建产物</td>
+      <td>工具箱的「零构建」约定要不要为它破例？建议折中：Vue 源码留在 quiz-app 仓库，工具箱只收 dist 当 vendor 资源，不在工具箱里跑 npm。</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>题库数据放主存档还是独立文件</td>
+      <td>建议<strong>独立文件</strong>，顺便把工具箱第 2 档的「存档拆分」一起做了。放主存档的话，题库一大，实习日志和画板的保存都会跟着变慢。</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>quiz-app 的 48 项未提交改动</td>
+      <td>建议<strong>先提交</strong>。集成要动 <code>request.js</code>，不先落一次基线，出了问题分不清是谁改的。</td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    第 1 项是主决策，定了我就能往下做。第 2–4 项你都可以回「按你建议的来」。
+  </div>
+</section>
+
+<footer>quiz-app → 个人工具箱 · 集成方案 · 2026-09-11</footer>
+
+</div>
+</body>
+</html>

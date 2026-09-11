@@ -39,6 +39,28 @@ npx -y @tauri-apps/cli@2 build   # 出包 → src-tauri/target/release/bundle/ns
 ```
 release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在出包时用。
 
+## 本机环境（影响打包决策）
+- **OS = Windows 10 专业版**（不是 Win11）。Win10 **不自带** WebView2，本机已装（pv 152.0.4191.66）。
+  因此 `bundle.windows.webviewInstallMode` 的选择对「分发到别的 Win10 机器」很关键：
+  当前是 `downloadBootstrapper`（安装包小，但目标机器需联网下载 WebView2）。
+  若要离线安装，改成 `embedBootstrapper` 或 `offlineInstaller`。
+- `%LOCALAPPDATA%\tauri` 缓存目录不存在 → **首次 `tauri build` 会联网下载 NSIS 工具链**（需访问 GitHub）。
+  即使打包这步失败，`target/release/<name>.exe` 也已生成，可直接当便携版用。
+
+## 已知缺陷（优先修）
+- **缺少单实例保护**。方案里列过但实现时漏了，`lib.rs` 没有 `tauri-plugin-single-instance`。
+  `AppStore` 启动时把整个存档读进内存、之后全量写回，所以**开两个实例会互相覆盖存档**（装好的版本 + 便携版同时开着就会丢数据）。
+  修法：`tauri-plugin-single-instance = "2"`，并在 `run()` 里**最先**注册 `.plugin(tauri_plugin_single_instance::init(|app, _, _| { ...set_focus() }))`。
+- `save_file` 原生另存为对话框尚未实测，是唯一没被碰过的链路。
+
+## 出包基准（2026-09-11）
+- 安装包 `PersonalToolbox_0.1.0_x64-setup.exe` = **1.92 MB**
+- 便携版 `toolbox.exe` = **3.93 MB**
+- NSIS 工具链缓存：`%LOCALAPPDATA%\tauri\NSIS`（首次 build 时联网下载，之后离线可用）
+
+## dev 与 release 共用数据目录
+`tauri dev` 和装好的应用读同一个 `%APPDATA%\com.lijiazhen.toolbox\store.json`（由 identifier 决定），所以调试时的数据在正式版里直接可见。
+
 ## 待办（第 2 档，均未开始）
 - 画板图片外置为文件（现在 base64 内联进 `shapes`，存档随图片膨胀）
 - 存档按 key 拆分，避免每次全量 stringify

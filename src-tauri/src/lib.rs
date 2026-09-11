@@ -137,6 +137,16 @@ async fn save_file(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例必须最先注册。第二实例启动时立刻回调这里，聚焦已有窗口后自行退出。
+        // 不做这件事的话：AppStore 启动时把整个存档读进内存、之后全量写回，
+        // 两个实例（例如装好的版本 + 便携版）同时开着会互相覆盖，后写的把另一份改动全抹掉。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(BackupGate::default())
         .invoke_handler(tauri::generate_handler![store_read, store_write, save_file])
