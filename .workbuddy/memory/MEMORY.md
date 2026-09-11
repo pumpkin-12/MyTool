@@ -48,14 +48,14 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
   即使打包这步失败，`target/release/<name>.exe` 也已生成，可直接当便携版用。
 
 ## 已知缺陷（优先修）
-- **缺少单实例保护**。方案里列过但实现时漏了，`lib.rs` 没有 `tauri-plugin-single-instance`。
-  `AppStore` 启动时把整个存档读进内存、之后全量写回，所以**开两个实例会互相覆盖存档**（装好的版本 + 便携版同时开着就会丢数据）。
-  修法：`tauri-plugin-single-instance = "2"`，并在 `run()` 里**最先**注册 `.plugin(tauri_plugin_single_instance::init(|app, _, _| { ...set_focus() }))`。
-- `save_file` 原生另存为对话框尚未实测，是唯一没被碰过的链路。
+- ~~**缺少单实例保护**~~ **已在代码里修好**（`tauri-plugin-single-instance`，`run()` 里最先注册），**但需重新 `tauri build` 才在安装包里生效**。
+- ~~`save_file` 未实测~~ 已实测可用。
+- 刷题工具已上线并经用户真机验证（2026-09-11）。遗留：`esc2` 无意义包装、判断题答错提示文案与选项不一致、两处 O(n²) find、Excel 导入全空行计入失败数。
 
 ## 出包基准（2026-09-11）
-- 安装包 `PersonalToolbox_0.1.0_x64-setup.exe` = **1.92 MB**
-- 便携版 `toolbox.exe` = **3.93 MB**
+- 安装包 `PersonalToolbox_0.1.0_x64-setup.exe` = **1.92 MB**（不含刷题工具；重新 build 后约 +1 MB）
+- 便携版 `toolbox.exe` = **3.93 MB**（同上）
+- `index.html` 现为 217 KB / 4848 行（四个工具）
 - NSIS 工具链缓存：`%LOCALAPPDATA%\tauri\NSIS`（首次 build 时联网下载，之后离线可用）
 
 ## dev 与 release 共用数据目录
