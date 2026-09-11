@@ -49,6 +49,8 @@
   .card:hover { transform: translateY(-2px); border-color: var(--accent); }
   .card.dragging { opacity: .35; border-style: dashed; }
   .grid-hint { text-align: center; color: var(--muted); font-size: 12px; margin: 0 0 48px; }
+  .data-bar { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; max-width: 760px; margin: 0 auto 48px; padding: 0 20px; }
+  .data-bar .hint { flex: 1 1 100%; text-align: center; }
   .card-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
   .card-icon svg { width: 22px; height: 22px; }
   .card-name { font-weight: 500; font-size: 14px; margin-bottom: 4px; }
@@ -326,7 +328,8 @@
  * 桌面端是异步文件读写：界面初始化必须等 AppStore.ready 之后。
  * ============================================================ */
 const AppStore = (function () {
-  const K = k => 'toolbox:' + k;
+  const PREFIX = 'toolbox:';
+  const K = k => PREFIX + k;
   const T = (typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
   const E = (typeof window !== 'undefined' && window.NativeStore) ? window.NativeStore : null;
   const native = !!(T || E);
@@ -335,9 +338,28 @@ const AppStore = (function () {
   function clone(v) {
     try { return JSON.parse(JSON.stringify(v)); } catch (e) { return v; }
   }
+  // 写盘串行化 + 失败可见。
+  // 原来每次 set 都直接 invoke 一次，而多个 invoke 的完成顺序没有保证，
+  // 快速连续保存时存在「后写覆盖先写」的竞态；串成一条 Promise 链即可消除。
+  // 同时把失败暴露出来 —— 桌面端磁盘写满/权限异常时不能再静默。
+  let writeChain = Promise.resolve();
+  let writeOk = true;
+  let writeErr = null;
+
   function persist() {
-    if (T) { try { T.invoke('store_write', { data: JSON.stringify(mem || {}) }); } catch (e) {} }
-    else if (E) { try { E.writeAll(mem || {}); } catch (e) {} }
+    if (!T && !E) return;
+    const payload = JSON.stringify(mem || {});
+    const run = T
+      ? () => T.invoke('store_write', { data: payload })
+      : () => Promise.resolve(E.writeAll(mem || {}));
+    writeChain = writeChain.then(run).then(
+      () => { writeOk = true; writeErr = null; },
+      (e) => {
+        writeOk = false;
+        writeErr = (e && e.message) ? e.message : String(e);
+        showToast('保存失败：' + writeErr);
+      }
+    );
   }
 
   // 启动时一次性把全部数据读进内存；失败也不能让界面卡死
@@ -356,6 +378,9 @@ const AppStore = (function () {
   return {
     ready: ready,
     isNative: native,
+    // 等待所有排队中的写入落盘。导入数据后要等它完成再刷新，否则可能读到旧值。
+    flush() { return writeChain; },
+    lastError() { return writeErr; },
     get(key, fallback) {
       if (native) {
         if (!mem) return fallback;
@@ -372,7 +397,10 @@ const AppStore = (function () {
         if (!mem) mem = {};
         mem[K(key)] = clone(value);
         persist();
-        return true;
+        // 写盘是异步的，所以这里返回的是「上一次」写盘的结果：
+        // 一次失败会在下一次保存时被工具感知到（例如画板的大体积告警），
+        // 同时上面 persist() 里的 toast 会立刻提示，不会静默。
+        return writeOk;
       }
       try {
         localStorage.setItem(K(key), JSON.stringify(value));
@@ -385,6 +413,46 @@ const AppStore = (function () {
         return;
       }
       try { localStorage.removeItem(K(key)); } catch (e) {}
+    },
+    /* 全量导出 / 导入：浏览器版 → 桌面版迁移的唯一通道。
+     * 导出的键一律带 PREFIX，导入时原样写回，两端格式对称。 */
+    exportAll() {
+      const out = {};
+      if (native) {
+        const src = mem || {};
+        for (const k in src) {
+          if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = clone(src[k]);
+        }
+        return out;
+      }
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!k || k.indexOf(PREFIX) !== 0) continue;
+          try { out[k] = JSON.parse(localStorage.getItem(k)); } catch (e) {}
+        }
+      } catch (e) {}
+      return out;
+    },
+    importAll(obj) {
+      if (!obj || typeof obj !== 'object') return 0;
+      let n = 0;
+      if (native) {
+        if (!mem) mem = {};
+        for (const k in obj) {
+          if (Object.prototype.hasOwnProperty.call(obj, k)) { mem[k] = clone(obj[k]); n++; }
+        }
+        if (n) persist();
+        return n;
+      }
+      try {
+        for (const k in obj) {
+          if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+          localStorage.setItem(k, JSON.stringify(obj[k]));
+          n++;
+        }
+      } catch (e) {}
+      return n;
     }
   };
 })();
@@ -447,6 +515,45 @@ function beep() {
     });
     setTimeout(() => ctx.close(), 900);
   } catch (e) {}
+}
+
+/* ---------- 文件保存（双形态：桌面端原生对话框 / 浏览器下载） ---------- */
+/* 桌面端 WebView2 对 <a download> + blob/data URL 的处理不受应用控制，
+ * 可能静默丢弃或直接落到系统下载目录，所以桌面端一律走 Rust 的 save_file 命令。 */
+function blobToBase64(blob) {
+  return blob.arrayBuffer().then(function (ab) {
+    const buf = new Uint8Array(ab);
+    let s = '';
+    const CH = 0x8000;              // 分块拼接，避免 apply 参数过多爆栈
+    for (let i = 0; i < buf.length; i += CH) {
+      s += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
+    }
+    return btoa(s);
+  });
+}
+async function saveBlob(blob, name) {
+  const T = (typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
+  if (T) {
+    try {
+      const saved = await T.invoke('save_file', {
+        fileName: name,
+        dataBase64: await blobToBase64(blob)
+      });
+      if (!saved) { showToast('已取消导出'); return false; }
+      showToast('已保存');
+      return true;
+    } catch (e) {
+      showToast('导出失败：' + ((e && e.message) ? e.message : e));
+      return false;
+    }
+  }
+  // 浏览器：保持原有行为
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return true;
 }
 
 /* ---------- 工具注册表 ---------- */
@@ -894,19 +1001,12 @@ registerTool({
       showToast(await copyText(rpOut.value) ? '周报已复制' : '复制失败');
     });
     el.querySelector('.il-rp-close').addEventListener('click', () => { rpBox.hidden = true; });
-    el.querySelector('.il-export').addEventListener('click', () => {
+    el.querySelector('.il-export').addEventListener('click', async () => {
       if (!logs.length) { showToast('还没有日志可导出'); return; }
       const data = { app: 'toolbox', type: 'internlog', exportedAt: new Date().toISOString(), count: logs.length, items: logs };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = '实习日志备份-' + fmtDate(new Date()) + '.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      showToast('已导出 ' + logs.length + ' 篇日志');
+      const name = '实习日志备份-' + fmtDate(new Date()) + '.json';
+      if (await saveBlob(blob, name)) showToast('已导出 ' + logs.length + ' 篇日志');
     });
     const fileInput = el.querySelector('.il-file');
     el.querySelector('.il-import').addEventListener('click', () => fileInput.click());
@@ -2244,17 +2344,13 @@ registerTool({
       for (const s of shapes) drawShape(xg, s, kk, 0, 0);
       return c;
     }
-    function exportPNG() {
+    async function exportPNG() {
       commitEditor();
       const c = renderSceneCanvas();
       if (!c) { showToast('画布是空的，先画点什么吧'); return; }
-      const a = document.createElement('a');
-      a.download = '画板-' + todayKey() + '.png';
-      a.href = c.toDataURL('image/png');
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      showToast('已导出 PNG');
+      const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+      if (!blob) { showToast('导出失败：图像生成失败'); return; }
+      if (await saveBlob(blob, '画板-' + todayKey() + '.png')) showToast('已导出 PNG');
     }
     async function copyPNG() {
       commitEditor();
@@ -2326,23 +2422,14 @@ registerTool({
       const w = N1(b.w + pad * 2), h = N1(b.h + pad * 2);
       return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${N1(b.x - pad)} ${N1(b.y - pad)} ${w} ${h}" width="${w}" height="${h}"><rect x="${N1(b.x - pad)}" y="${N1(b.y - pad)}" width="${w}" height="${h}" fill="#ffffff"/>${parts.join('')}</svg>`;
     }
-    function downloadBlob(blob, name) {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    }
-    function exportSVG() {
+    async function exportSVG() {
       commitEditor();
       const svg = genSVG();
       if (!svg) { showToast('画布是空的，先画点什么吧'); return; }
-      downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), '画板-' + todayKey() + '.svg');
-      showToast('已导出 SVG');
+      const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+      if (await saveBlob(blob, '画板-' + todayKey() + '.svg')) showToast('已导出 SVG');
     }
-    function exportJSON() {
+    async function exportJSON() {
       commitEditor();
       if (!shapes.length) { showToast('画布是空的，无需备份'); return; }
       const data = {
@@ -2354,8 +2441,10 @@ registerTool({
         view: view,
         items: shapes
       };
-      downloadBlob(new Blob([JSON.stringify(data)], { type: 'application/json' }), '画板备份-' + todayKey() + '.json');
-      showToast('已导出 JSON 备份（' + shapes.length + ' 个图形）');
+      const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+      if (await saveBlob(blob, '画板备份-' + todayKey() + '.json')) {
+        showToast('已导出 JSON 备份（' + shapes.length + ' 个图形）');
+      }
     }
     fileInput.addEventListener('change', () => {
       const f = fileInput.files[0];
@@ -3042,19 +3131,11 @@ registerTool({
     }
 
     /* ---------- 导出 ---------- */
-    function download(url, name) {
-      const a = document.createElement('a');
-      a.href = url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-    }
-    function exportSVG() {
+    async function exportSVG() {
       if (!lastGood) { showToast('还没有可导出的图'); return; }
       if (scale !== 1) { const s = scale; setScale(1); setTimeout(() => setScale(s), 0); }
       const blob = new Blob([lastGood], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      download(url, 'mermaid-' + Date.now() + '.svg');
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      showToast('SVG 已导出');
+      if (await saveBlob(blob, 'mermaid-' + Date.now() + '.svg')) showToast('SVG 已导出');
     }
     function exportPNG(scaleFactor) {
       if (!lastGood) { showToast('还没有可导出的图'); return; }
@@ -3082,12 +3163,9 @@ registerTool({
           g.fillRect(0, 0, c.width, c.height);
           g.drawImage(img, 0, 0, c.width, c.height);
           URL.revokeObjectURL(url);
-          c.toBlob(b => {
+          c.toBlob(async b => {
             if (!b) { showToast('PNG 导出失败，可改用 SVG'); return; }
-            const u = URL.createObjectURL(b);
-            download(u, 'mermaid-' + Date.now() + '.png');
-            setTimeout(() => URL.revokeObjectURL(u), 4000);
-            showToast('PNG 已导出');
+            if (await saveBlob(b, 'mermaid-' + Date.now() + '.png')) showToast('PNG 已导出');
           }, 'image/png');
         };
         img.onerror = () => { URL.revokeObjectURL(url); showToast('PNG 导出失败，可改用 SVG'); };
@@ -3270,7 +3348,7 @@ function renderHome() {
   app.innerHTML = `
     <header class="hero">
       <h1>个人工具箱</h1>
-      <p>本地优先 · 数据保存在浏览器里 · 可随时迁移为桌面应用</p>
+      <p>本地优先 · ${AppStore.isNative ? '数据保存在本地文件' : '数据保存在浏览器里'} · 可随时迁移为桌面应用</p>
     </header>
     <div class="grid">
       ${tools.map(t => `
@@ -3280,7 +3358,12 @@ function renderHome() {
           <div class="card-desc">${t.desc}</div>
         </a>`).join('')}
     </div>
-    ${tools.length > 1 ? '<p class="grid-hint">拖动卡片可调整顺序，位置自动保存</p>' : ''}`;
+    ${tools.length > 1 ? '<p class="grid-hint">拖动卡片可调整顺序，位置自动保存</p>' : ''}
+    <div class="data-bar">
+      <button class="btn btn-sm" id="dataExport">导出全部数据</button>
+      <button class="btn btn-sm" id="dataImport">导入全部数据</button>
+      <span class="hint">浏览器版搬到桌面版、或换机器时，用这两个按钮整体搬家</span>
+    </div>`;
   const grid = app.querySelector('.grid');
   let dragEl = null;
   grid.addEventListener('dragstart', e => {
@@ -3308,6 +3391,55 @@ function renderHome() {
     if (dragEl) dragEl.classList.remove('dragging');
     dragEl = null;
     AppStore.set('home:order', [...grid.querySelectorAll('.card')].map(c => c.dataset.id));
+  });
+
+  /* ---------- 全量数据导出 / 导入 ---------- */
+  /* 每次都重建 input 节点：旧的连同它的监听一起丢掉，
+   * 避免首页来回切换时监听器叠加。 */
+  const staleInput = document.getElementById('dataFile');
+  if (staleInput) staleInput.remove();
+  const dFile = document.createElement('input');
+  dFile.type = 'file';
+  dFile.id = 'dataFile';
+  dFile.accept = '.json,application/json';
+  dFile.style.display = 'none';
+  document.body.appendChild(dFile);
+
+  document.getElementById('dataExport').addEventListener('click', async () => {
+    const keys = AppStore.exportAll();
+    const n = Object.keys(keys).length;
+    if (!n) { showToast('还没有任何数据可导出'); return; }
+    const payload = {
+      app: 'toolbox',
+      type: 'full',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      count: n,
+      keys: keys
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    if (await saveBlob(blob, '工具箱全部数据-' + todayKey() + '.json')) {
+      showToast('已导出 ' + n + ' 项数据');
+    }
+  });
+
+  document.getElementById('dataImport').addEventListener('click', () => dFile.click());
+  dFile.addEventListener('change', () => {
+    const f = dFile.files && dFile.files[0];
+    dFile.value = '';
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      let data;
+      try { data = JSON.parse(reader.result); } catch (e) { showToast('导入失败：文件无法解析'); return; }
+      const keys = (data && data.type === 'full' && data.keys && typeof data.keys === 'object') ? data.keys : null;
+      if (!keys) { showToast('格式不对：这不是「全部数据」导出的备份'); return; }
+      const n = AppStore.importAll(keys);
+      await AppStore.flush();          // 等写盘落定再重绘，否则可能读到旧值
+      showToast('已导入 ' + n + ' 项数据');
+      render();
+    };
+    reader.readAsText(f);
   });
 }
 

@@ -741,6 +741,70 @@ async function saveBlob(blob, name) {
   </div>
 </section>
 
+<section>
+  <h2><span class="n">10</span>实施记录（2026-09-11 已落地第 0 / 1 档）</h2>
+
+  <h3>已确定并写入配置的决策值</h3>
+  <table class="kv">
+    <tr><td><code>bundle.identifier</code></td><td><code>com.lijiazhen.toolbox</code> —— 数据目录由此决定，见文末路径</td></tr>
+    <tr><td>前端位置</td><td><code>web/index.html</code>，<code>frontendDist: "../web"</code></td></tr>
+    <tr><td><code>productName</code></td><td><code>PersonalToolbox</code>（ASCII，NSIS 输出文件名会用到）；窗口标题为「个人工具箱」</td></tr>
+    <tr><td>画板图片外置</td><td>本轮不做，留作第 2 档</td></tr>
+    <tr><td>打包形态</td><td>NSIS 安装包；便携版即 <code>src-tauri/target/release/</code> 下的裸 exe（依赖系统 WebView2）</td></tr>
+  </table>
+
+  <h3>完成清单</h3>
+  <ul>
+    <li><strong>版本控制</strong>：<code>git init</code>，迁移前基线提交 <code>5349f68</code>，可随时回滚。</li>
+    <li><strong>目录重构</strong>：<code>index.html</code> → <code>web/index.html</code>，新建 <code>web/vendor/</code>。</li>
+    <li><strong>B1 解决</strong>：<code>web/vendor/mermaid.min.js</code>（3.5 MB，mermaid 11）。</li>
+    <li><strong>B2/B3 解决</strong>：<code>src-tauri</code> 全套 —— <code>Cargo.toml</code>、<code>build.rs</code>、<code>tauri.conf.json</code>、<code>capabilities/default.json</code>、<code>src/main.rs</code>、<code>src/lib.rs</code>（<code>store_read</code> / <code>store_write</code> / <code>save_file</code>）。</li>
+    <li><strong>B4 解决</strong>：<code>dragDropEnabled: false</code> 已写入窗口配置。</li>
+    <li><strong>H1 解决</strong>：5 处导出（画板 PNG/SVG/JSON、Mermaid SVG/PNG、实习日志备份）全部改走 <code>saveBlob()</code> → 原生另存为；<code>downloadBlob()</code> 与 <code>download()</code> 两个旧函数已删除。</li>
+    <li><strong>H2/H3 解决</strong>：<code>AppStore.persist()</code> 改为 Promise 链串行化；新增 <code>AppStore.flush()</code> / <code>lastError()</code>；<code>set()</code> 返回值改为真实写盘结果。</li>
+    <li><strong>H5 解决</strong>：首页底部新增「导出全部数据 / 导入全部数据」，一次覆盖三个工具。</li>
+    <li><strong>图标</strong>：<code>src-tauri/icons/</code> 共 16 个文件，含多尺寸 <code>icon.ico</code>；<code>source-1024.png</code> 为可再生的源图。</li>
+  </ul>
+
+  <h3>对原方案的两处修正</h3>
+  <table>
+    <tr><th style="width:70px">原判断</th><th>实测结论</th></tr>
+    <tr>
+      <td>B1</td>
+      <td>结论比预想的好。原先担心 <code>dist/mermaid.min.js</code> 不是 UMD、取不到 <code>window.mermaid</code>——实测该文件最后一行是
+        <code>globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;</code>，
+        确实会挂到全局，<strong><code>viaLocal()</code> 一行都不用改</strong>。它本身是 esbuild 的 IIFE 而非 UMD，但闭包自包含（<code>chunkRefs=0</code>、<code>dynamicImports=0</code>），没有懒加载拆分。</td>
+    </tr>
+    <tr>
+      <td>H5</td>
+      <td>原先判断「只有画板有 exportJSON」<strong>低估了现状</strong>：实习日志和画板其实都已内置导入功能，真正缺导出/导入的只有 Mermaid。所以首页的全量导出/导入一次覆盖三个工具，比给 Mermaid 单独补 UI 更省事。</td>
+    </tr>
+  </table>
+
+  <h3>方案外的额外加固：存档轮转备份</h3>
+  <p>原方案只在「遗留风险」里提了一句。既然已经动手，就一并做了：<code>store_write</code> 落盘前会把当前存档轮转为
+    <code>store.json.1 → .2 → .3</code>，保留最近三份。关键是加了 <strong>30 分钟节流</strong>——画板拖拽时每 400ms 就可能保存一次，不节流的话每次都要复制一份几 MB 的文件，反而会拖垮界面。</p>
+
+  <h3>构建与数据位置</h3>
+<pre><code>cd src-tauri
+cargo tauri dev      # 开发：改 web/ 下文件后按 F5 刷新窗口（无热重载）
+cargo tauri build    # 出包：src-tauri/target/release/bundle/nsis/
+
+# 没装 cargo-tauri 的话，用 npx 等价调用，不往项目里塞 node_modules：
+npx @tauri-apps/cli@2 dev
+npx @tauri-apps/cli@2 build</code></pre>
+  <table class="kv">
+    <tr><td>存档</td><td><code>%APPDATA%\com.lijiazhen.toolbox\store.json</code></td></tr>
+    <tr><td>备份</td><td>同目录 <code>store.json.1</code> / <code>.2</code> / <code>.3</code>（每 30 分钟最多轮转一次）</td></tr>
+    <tr><td>安装包</td><td><code>src-tauri\target\release\bundle\nsis\PersonalToolbox_0.1.0_x64-setup.exe</code></td></tr>
+    <tr><td>便携版</td><td><code>src-tauri\target\release\toolbox.exe</code>（需系统已装 WebView2）</td></tr>
+  </table>
+
+  <div class="callout">
+    <b>关于已有数据：</b>迁移前已导出过一份 <code>实习日志备份-2026-09-11.json</code>，它仍在项目根目录。桌面版首次启动后在实习日志页用「导入」按钮吃这个文件即可；或者用首页的「导入全部数据」一次搬完三个工具。
+  </div>
+</section>
+
 <footer>个人工具箱 · Tauri 迁移方案 · 2026-09-11</footer>
 
 </div>
