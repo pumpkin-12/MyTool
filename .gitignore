@@ -1,0 +1,17 @@
+# Tauri / Rust 构建产物
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Node（仅在需要 tauri CLI 时才会出现）
+node_modules/
+package-lock.json
+
+# 临时探测文件
+_env.txt
+_env_done.txt
+_scan.txt
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store

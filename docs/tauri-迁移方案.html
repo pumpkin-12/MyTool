@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>个人工具箱 · Tauri 桌面端迁移方案</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --text: #1f2328;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #2563eb;
+    --ok: #0f6e56;
+    --warn: #854f0b;
+    --err: #a32d2d;
+    --code-bg: #f2f4f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14.5px;
+    line-height: 1.75;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 24px 80px; }
+  header.doc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 30px;
+    margin-bottom: 26px;
+  }
+  header.doc h1 { font-size: 23px; font-weight: 500; margin: 0 0 10px; letter-spacing: .3px; }
+  header.doc .sub { color: var(--muted); font-size: 13px; margin: 0; }
+  .meta { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .meta span {
+    font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 11px; background: #fafbfc;
+  }
+  section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px 30px;
+    margin-bottom: 18px;
+  }
+  h2 {
+    font-size: 17px; font-weight: 500; margin: 0 0 16px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  h2 .n {
+    font-size: 12px; color: var(--accent); background: #eff5ff;
+    border-radius: 6px; padding: 2px 8px; font-weight: 400; flex: none;
+  }
+  h3 { font-size: 14.5px; font-weight: 500; margin: 26px 0 10px; }
+  h3:first-of-type { margin-top: 6px; }
+  h4 { font-size: 13.5px; font-weight: 500; margin: 18px 0 8px; color: var(--muted); }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  code {
+    font-family: ui-monospace, Consolas, "Courier New", monospace;
+    font-size: 12.5px;
+    background: var(--code-bg);
+    padding: 1.5px 6px;
+    border-radius: 5px;
+    color: #1f2328;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 15px 17px;
+    overflow-x: auto;
+    margin: 0 0 16px;
+    line-height: 1.6;
+  }
+  pre code { background: none; padding: 0; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; margin: 0 0 16px; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: #fafbfc; font-weight: 500; color: var(--muted); font-size: 12.5px; }
+  td code { font-size: 12px; }
+  .tag {
+    display: inline-block; font-size: 11.5px; line-height: 1.5;
+    padding: 1px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .t-block { background: #fcebeb; color: var(--err); }
+  .t-risk  { background: #faeeda; color: var(--warn); }
+  .t-done  { background: #e1f5ee; color: var(--ok); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: #f5f9ff;
+    border-radius: 0 8px 8px 0;
+    padding: 13px 17px;
+    margin: 0 0 16px;
+    font-size: 13.5px;
+  }
+  .callout.warn { border-left-color: #ef9f27; background: #fffaf0; }
+  .callout.danger { border-left-color: #e24b4a; background: #fff6f6; }
+  .callout b { font-weight: 500; }
+  .phase {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+    background: #fcfcfd;
+  }
+  .phase-h { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .phase-h .badge {
+    font-size: 11.5px; padding: 2px 10px; border-radius: 6px;
+    background: var(--accent); color: #fff; flex: none;
+  }
+  .phase.p1 .phase-h .badge { background: #534ab7; }
+  .phase.p2 .phase-h .badge { background: #888780; }
+  .phase-h strong { font-weight: 500; font-size: 15px; }
+  .phase .goal { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .accept {
+    background: #f6fbf8; border: 1px dashed #b6ddc9;
+    border-radius: 8px; padding: 11px 15px; margin-top: 12px; font-size: 13px;
+  }
+  .accept b { font-weight: 500; color: var(--ok); }
+  .accept ul { margin: 6px 0 0; }
+  .kv { font-size: 13px; }
+  .kv td:first-child { width: 210px; white-space: nowrap; }
+  footer { color: var(--muted); font-size: 12.5px; text-align: center; padding-top: 10px; }
+  @media print {
+    body { background: #fff; }
+    section, header.doc { border: none; padding: 0; margin-bottom: 22px; }
+    .phase { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>个人工具箱 · Tauri 桌面端迁移方案</h1>
+  <p class="sub">把 <code>index.html</code> 单文件网页应用封装为 Windows 桌面应用，数据从浏览器存储迁到本地文件。</p>
+  <div class="meta">
+    <span>2026-09-11</span>
+    <span>目标平台：Windows</span>
+    <span>技术选型：Tauri 2</span>
+    <span>版本锚点：tauri 2.11.x</span>
+  </div>
+</header>
+
+<section>
+  <h2><span class="n">01</span>结论先行</h2>
+
+  <p>这次迁移<strong>不是重写</strong>。现有代码里已经预埋了完整的 Tauri 分支——<code>AppStore</code> 会自动嗅探 <code>window.__TAURI__.core</code>，一旦命中就走 <code>invoke('store_read')</code> / <code>invoke('store_write')</code>；<code>isDesktop</code> 也已经用来决定 Mermaid 优先加载本地文件还是 CDN。缺的只是<strong>另一头</strong>：Rust 侧的工程、那两条命令、以及配置文件。</p>
+
+  <p>所以工作量集中在一件事上：<strong>把已埋好的接口接通，并把桌面端特有的三处行为差异收口</strong>。</p>
+
+  <table class="kv">
+    <tr><td>技术栈</td><td>Tauri 2 稳定线（<code>tauri</code> 2.11.x）。不上 Tauri 3——它目前是 CEF 后端的 early alpha，不适合承载你的唯一数据副本。</td></tr>
+    <tr><td>是否引入打包器</td><td><strong>不引入</strong>。保持零依赖、无构建，只用 <code>tauri.conf.json</code> 指向前端目录。</td></tr>
+    <tr><td>体积预期</td><td>安装包约 3–6 MB，安装后约 10–15 MB；内存占用比浏览器版低。</td></tr>
+    <tr><td>关键前置</td><td>本机需装 Rust 工具链（stable）与 <code>tauri-cli</code>；Windows 上需要 WebView2 运行时（Win11 自带，Win10 由安装包补装）。</td></tr>
+  </table>
+
+  <div class="callout">
+    <b>一句话推荐路径：</b>先做第 0 档拿到「能跑、数据真落盘」的可运行版本，确认无误后再做第 1 档（原生导出、写盘可靠性、数据迁移），第 2 档（图片外置、自动更新、托盘）按需再定。
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>现状盘点：已就绪 / 阻塞 / 高危</h2>
+
+  <h3>已经写好了的部分</h3>
+  <ul>
+    <li><code>AppStore</code> 三后端探测（Tauri / Electron / 浏览器），接口签名统一，<strong>工具代码一行都不用改</strong>。</li>
+    <li>桌面端异步读写的初始化时序已经处理：<code>AppStore.ready</code> 是 Promise，<code>render()</code> 等它，还有 3 秒超时兜底防白屏。</li>
+    <li>数据 key 命名统一为 <code>toolbox:&lt;tool&gt;:&lt;field&gt;</code>，迁移时好枚举、好排查。</li>
+    <li>Mermaid 的加载顺序已按环境分流：桌面端 <code>[本地, CDN]</code>，浏览器 <code>[CDN, 本地]</code>。</li>
+  </ul>
+
+  <h3>阻塞项（不做就跑不起来 / 丢数据）</h3>
+  <table>
+    <tr><th style="width:52px">编号</th><th>问题</th><th>后果</th><th style="width:210px">处理</th></tr>
+    <tr>
+      <td><span class="tag t-block">B1</span></td>
+      <td><code>vendor/mermaid.min.js</code> 不存在，项目里也没有 <code>vendor/</code> 目录</td>
+      <td>断网时 Mermaid 编辑器直接白屏报「库加载失败」</td>
+      <td>下载 mermaid 11 的 UMD 构建放入 <code>web/vendor/</code></td>
+    </tr>
+    <tr>
+      <td><span class="tag t-block">B2</span></td>
+      <td>没有 Rust 侧，<code>store_read</code> / <code>store_write</code> 两条命令不存在</td>
+      <td>一旦 <code>__TAURI__</code> 存在，代码就走 native 分支，而命令调不通 → <code>mem</code> 永远是 <code>{}</code>，<strong>所有数据静默丢失</strong></td>
+      <td>新建 <code>src-tauri</code>，实现这两条命令</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-block">B3</span></td>
+      <td>没有 <code>tauri.conf.json</code>，<code>app.withGlobalTauri</code> 未开</td>
+      <td><code>window.__TAURI__</code> 不存在 → 永远走 localStorage 分支 → 数据存在 WebView 的缓存目录里，<strong>清缓存/升级即消失</strong></td>
+      <td>配置文件里显式设 <code>"withGlobalTauri": true</code></td>
+    </tr>
+    <tr>
+      <td><span class="tag t-block">B4</span></td>
+      <td>Windows 上 Tauri 默认用原生 OLE 拖放，会<strong>吞掉</strong> WebView 的 HTML5 拖放事件</td>
+      <td>首页卡片拖拽排序 <strong>+</strong> 画板拖入图片，两个功能同时失效（表现为禁止光标，<code>dragstart</code> 有反应但 <code>drop</code> 永不触发）</td>
+      <td>窗口配置设 <code>"dragDropEnabled": false</code></td>
+    </tr>
+  </table>
+
+  <h3>高危项（不阻塞，但上线后会咬人）</h3>
+  <table>
+    <tr><th style="width:52px">编号</th><th>问题</th><th style="width:330px">说明</th></tr>
+    <tr>
+      <td><span class="tag t-risk">H1</span></td>
+      <td>导出走 <code>&lt;a download&gt;</code> + blob / data URL</td>
+      <td>WebView2 对 blob 下载的处理不受应用控制，可能静默丢弃、或直接落到系统下载目录而不给选择机会。画板 PNG/SVG/JSON、Mermaid SVG/PNG 共 5 处导出都受影响。</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-risk">H2</span></td>
+      <td><code>persist()</code> 每次 set 全量写盘，且无串行化</td>
+      <td>多个 <code>invoke</code> 的完成顺序没有保证，快速连续保存存在「后写覆盖先写」的竞态；画板带图后单次 payload 可达数 MB。</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-risk">H3</span></td>
+      <td>native 分支的 <code>AppStore.set</code> 恒返回 <code>true</code></td>
+      <td>画板里「内容较大，自动保存失败，请及时导出备份」的提示<strong>永远不会触发</strong>；磁盘写满、权限异常等情况会完全静默。</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-risk">H4</span></td>
+      <td>画板图片以 base64 内联进 <code>shapes</code> 数组</td>
+      <td>单张 1600px PNG 压缩后仍有数 MB，进 JSON 再膨胀约 1/3；每次自动保存（400ms 防抖）都要全量 <code>JSON.stringify</code>。</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-risk">H5</span></td>
+      <td>浏览器 → 桌面端没有数据迁移通道</td>
+      <td>只有画板有 <code>exportJSON</code>；实习日志和 Mermaid 的源码/历史都没有导入功能，换到桌面端等于从零开始。</td>
+    </tr>
+  </table>
+</section>
+
+<section>
+  <h2><span class="n">03</span>目标目录结构</h2>
+
+  <p>建议把前端挪进 <code>web/</code>，而不是让 <code>frontendDist</code> 指向仓库根目录——否则 <code>src-tauri</code> 会被当作前端资源一起打进包里，也会拖慢每次构建。</p>
+
+<pre><code>MyTool/
+├─ web/                          ← 前端根目录（frontendDist 指向它）
+│  ├─ index.html                 ← 从仓库根目录移入，内容不变
+│  └─ vendor/
+│     └─ mermaid.min.js          ← 新增（UMD 构建，离线用）
+├─ src-tauri/
+│  ├─ Cargo.toml
+│  ├─ build.rs
+│  ├─ tauri.conf.json
+│  ├─ capabilities/
+│  │  └─ default.json
+│  ├─ icons/                     ← 由 tauri icon 命令生成
+│  └─ src/
+│     ├─ main.rs
+│     └─ lib.rs                  ← 两条存储命令 + 一条保存命令
+├─ docs/
+│  └─ tauri-迁移方案.html         ← 本文件
+├─ .gitignore                    ← 建议同时 git init
+└─ README.md</code></pre>
+
+  <p><code>index.html</code> 里 <code>const LOCAL = 'vendor/mermaid.min.js'</code> 是相对路径，和 <code>web/</code> 同级关系保持不变，所以这行不用改。</p>
+</section>
+
+<section>
+  <h2><span class="n">04</span>分档实施</h2>
+
+  <div class="phase p0">
+    <div class="phase-h"><span class="badge">第 0 档</span><strong>地基：能启动、数据真落盘</strong></div>
+    <p class="goal">目标：双击 <code>.exe</code> 能打开工具箱，三个工具都能用，关掉再开数据还在，并且数据文件能在磁盘上找到。</p>
+
+    <h4>步骤</h4>
+    <ol>
+      <li><strong>装环境</strong>：Rust stable 工具链 + <code>cargo install tauri-cli --version "^2"</code>（或直接用 <code>npx @tauri-apps/cli</code>）。</li>
+      <li><strong>挪前端</strong>：<code>index.html</code> → <code>web/index.html</code>。</li>
+      <li><strong>补 B1</strong>：下载 mermaid 11 的 UMD 构建，放到 <code>web/vendor/mermaid.min.js</code>。用 UMD 版是因为现有 <code>viaLocal()</code> 读的是 <code>window.mermaid</code> 全局；CDN 那路走的才是 ESM。</li>
+      <li><strong>补 B2 + B3</strong>：按第 05 节建 <code>src-tauri</code>，写好 <code>tauri.conf.json</code>、<code>Cargo.toml</code>、<code>lib.rs</code>、<code>main.rs</code>、capabilities。</li>
+      <li><strong>补 B4</strong>：窗口配置里 <code>"dragDropEnabled": false</code>，然后<strong>实测两项拖放</strong>（见验收清单）。</li>
+      <li><strong>补 H2 / H3</strong>（顺手的，代码量很小）：按第 06 节打 JS 补丁，把写盘串行化、把失败暴露出来。</li>
+      <li><strong>生成图标</strong>：准备一张 1024×1024 PNG，跑 <code>tauri icon &lt;图片&gt;</code>，自动产出各平台尺寸。</li>
+    </ol>
+
+    <div class="accept">
+      <b>验收清单（必须逐条实测，别只看编译通过）</b>
+      <ul>
+        <li>应用启动，三个工具卡片都在，无白屏。</li>
+        <li>断开网络，打开 Mermaid 编辑器 → 仍能实时渲染（证明 <code>vendor/mermaid.min.js</code> 生效）。</li>
+        <li>首页把卡片拖到新顺序 → 松开后顺序保持；重启应用后顺序仍是新的。</li>
+        <li>画板里从资源管理器拖一张 PNG 进来 → 图片落进画布（证明 <code>dragDropEnabled: false</code> 生效）。</li>
+        <li>写一条实习日志、在 Mermaid 里改一行 → 完全退出应用 → 重开，内容都还在。</li>
+        <li>在 <code>%APPDATA%\&lt;identifier&gt;\store.json</code> 找到数据文件，用编辑器打开确认内容可读。</li>
+        <li>开发模式下按 F12 打开 DevTools 无报错；<code>console.log(window.__TAURI__.core)</code> 有值。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="phase p1">
+    <div class="phase-h"><span class="badge">第 1 档</span><strong>收口：桌面端该有的样子</strong></div>
+    <p class="goal">目标：导出行为符合桌面直觉、数据不会因为任何原因静默消失、老数据能搬进来。</p>
+
+    <h4>要做的事</h4>
+    <ul>
+      <li><strong>原生导出（解 H1）</strong>：加一条 Rust 命令 <code>save_file</code>，前端导出统一走系统「另存为」对话框。见第 06 节补丁 B。</li>
+      <li><strong>写盘可靠性（解 H2 / H3）</strong>：Rust 侧先校验 JSON 合法性再落盘，用 <code>临时文件 + rename</code> 原子替换，避免写到一半断电导致存档损坏。</li>
+      <li><strong>数据迁移（解 H5）</strong>：在首页加一个不显眼的入口，提供「导出全部数据」和「导入全部数据」。实现上就是枚举所有 <code>toolbox:*</code> 键打成一份 JSON，导入时整份写回并重载。这一步是浏览器版 → 桌面版唯一的桥。</li>
+      <li><strong>窗口体验</strong>：单实例（第二次启动聚焦已有窗口而非开第二个）、记住窗口尺寸与位置、给窗口设合理的最小宽高、禁用右键菜单里的「重新加载」以免误触丢状态。</li>
+      <li><strong>打包</strong>：产出 NSIS 安装包；<code>webviewInstallMode</code> 设 <code>downloadBootstrapper</code>（安装包小）或 <code>embedBootstrapper</code>（离线可装，按你的分发场景挑）。</li>
+    </ul>
+
+    <div class="accept">
+      <b>验收清单</b>
+      <ul>
+        <li>画板导出 PNG / SVG / JSON、Mermaid 导出 SVG / PNG，五个都弹出系统保存对话框，取消后不产生空文件。</li>
+        <li>把 <code>store.json</code> 改成只读，再操作一次 → 出现明确的失败提示，而不是安静地什么都不发生。</li>
+        <li>浏览器版导出全部数据 → 桌面版导入 → 三个工具的数据全部到位。</li>
+        <li>重复双击启动图标，不会开出第二个窗口。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="phase p2">
+    <div class="phase-h"><span class="badge">第 2 档</span><strong>体验与长期维护（可选）</strong></div>
+    <p class="goal">目标：解决画板体积问题、加上分发能力。这一档可以整档跳过，也可以只挑一项做。</p>
+
+    <table>
+      <tr><th style="width:190px">项目</th><th>内容</th><th style="width:150px">代价</th></tr>
+      <tr>
+        <td><strong>图片外置（解 H4）</strong></td>
+        <td>画板插入图片时不再存 base64，改存到 <code>assets/</code> 目录，<code>shapes</code> 里只留相对路径。需要同步改：插入逻辑、<code>drawShape</code> 的图片加载、<code>genSVG</code> 导出、以及加载时的路径解析（走 asset 协议要开 CSP 与 scope）。</td>
+        <td>改动面较大，涉及画板内多处</td>
+      </tr>
+      <tr>
+        <td><strong>存量拆分存档</strong></td>
+        <td>把单个 <code>store.json</code> 拆成按 key 分文件（或按工具分文件），保存时只写变化的那一个，避免每次全量 stringify 数 MB。</td>
+        <td>中等，需改 AppStore</td>
+      </tr>
+      <tr>
+        <td><strong>自动更新</strong></td>
+        <td><code>tauri-plugin-updater</code> + 一个静态 JSON 清单。适合你以后想自己迭代时直接推送。</td>
+        <td>小，但需要一个托管端点</td>
+      </tr>
+      <tr>
+        <td><strong>托盘 / 开机自启</strong></td>
+        <td><code>tauri-plugin-autostart</code> + 托盘菜单。工具箱这类「随手记一下」的应用，托盘常驻体验更好。</td>
+        <td>小</td>
+      </tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">05</span>Rust 侧：可以直接抄的四份文件</h2>
+
+  <div class="callout warn">
+    <b>参数命名注意：</b>Tauri v2 会自动把 JS 传来的 camelCase 映射到 Rust 的 snake_case。也就是前端写 <code>{ fileName: ..., dataBase64: ... }</code>，Rust 侧签名写 <code>file_name</code> / <code>data_base64</code>。这条不搞清楚，命令会一直报「缺少参数」。
+  </div>
+
+  <h3>tauri.conf.json</h3>
+<pre><code>{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PersonalToolbox",
+  "version": "0.1.0",
+  "identifier": "com.yourname.toolbox",
+  "build": {
+    "frontendDist": "../web",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "个人工具箱",
+        "width": 1200,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}</code></pre>
+
+  <table>
+    <tr><th style="width:230px">字段</th><th>为什么必须这样设</th></tr>
+    <tr><td><code>withGlobalTauri: true</code></td><td><strong>必填。</strong>现有代码靠 <code>window.__TAURI__.core</code> 判断和调用，不开这个全局对象就不存在，而项目没有打包器、也不可能去 import <code>@tauri-apps/api</code>。</td></tr>
+    <tr><td><code>dragDropEnabled: false</code></td><td><strong>必填。</strong>不开会让首页卡片拖拽排序和画板拖图双双失效。这个属性只在 <code>tauri.conf.json</code> 里声明窗口时可靠生效，写到 Rust 的 window builder 里会被忽略。</td></tr>
+    <tr><td><code>frontendDist: "../web"</code></td><td>相对 <code>src-tauri/</code> 解析。指向 <code>web/</code> 而不是根目录，避免把 Rust 工程打进包里。</td></tr>
+    <tr><td><code>csp: null</code></td><td>先用默认（不注入）。<code>index.html</code> 里有一个巨大的内联 <code>&lt;script&gt;</code> 和大量内联 <code>style</code>，真要收紧 CSP 就得放 <code>'unsafe-inline'</code> 并把 <code>https://cdn.jsdelivr.net</code> 加进 <code>script-src</code>——这是一件独立的事，别和迁移混在一起做。</td></tr>
+    <tr><td><code>productName</code> 用 ASCII</td><td>NSIS 打包的输出文件名会用到它，中文名在部分环境下会出问题。中文显示交给窗口的 <code>title</code> 即可。</td></tr>
+    <tr><td><code>identifier</code></td><td>反向域名格式，必须全局唯一。它同时决定数据目录位置：<code>%APPDATA%\&lt;identifier&gt;\</code>。</td></tr>
+  </table>
+
+  <h3>Cargo.toml</h3>
+<pre><code>[package]
+name = "toolbox"
+version = "0.1.0"
+description = "个人工具箱"
+edition = "2021"
+
+[lib]
+name = "toolbox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true</code></pre>
+
+  <h3>build.rs</h3>
+  <p>固定三行，不用改：</p>
+<pre><code>fn main() {
+    tauri_build::build()
+}</code></pre>
+
+  <h3>src/main.rs</h3>
+<pre><code>#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+fn main() {
+    toolbox_lib::run()
+}</code></pre>
+  <p><code>windows_subsystem = "windows"</code> 的作用是发布版不弹黑色控制台窗口，但 debug 构建仍保留控制台方便看 <code>println!</code>。</p>
+
+  <h3>src/lib.rs</h3>
+<pre><code>use std::fs;
+use std::path::PathBuf;
+
+use base64::Engine;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::DialogExt;
+
+const STORE_FILE: &str = "store.json";
+
+fn store_path(app: &AppHandle) -> Result&lt;PathBuf, String&gt; {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法解析应用数据目录: {e}"))?;
+    fs::create_dir_all(&amp;dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    Ok(dir.join(STORE_FILE))
+}
+
+// 启动时一次性读全量。文件不存在不算错误，返回空对象即可。
+#[tauri::command]
+fn store_read(app: AppHandle) -> Result&lt;String, String&gt; {
+    let path = store_path(&amp;app)?;
+    match fs::read_to_string(&amp;path) {
+        Ok(s) =&gt; Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound =&gt; Ok("{}".to_string()),
+        Err(e) =&gt; Err(format!("读取存档失败: {e}")),
+    }
+}
+
+// 先校验再落盘，临时文件 + rename 原子替换，避免写一半断电阻断存档。
+#[tauri::command]
+fn store_write(app: AppHandle, data: String) -&gt; Result&lt;usize, String&gt; {
+    serde_json::from_str::&lt;serde_json::Value&gt;(&amp;data)
+        .map_err(|e| format!("拒绝写入：内容不是合法 JSON（{e}）"))?;
+
+    let path = store_path(&amp;app)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&amp;tmp, data.as_bytes()).map_err(|e| format!("写临时文件失败: {e}"))?;
+    fs::rename(&amp;tmp, &amp;path).map_err(|e| format!("替换存档失败: {e}"))?;
+    Ok(data.len())
+}
+
+// 原生「另存为」。前端把内容转成 base64 传进来，避免字节数组走 JSON 造成体积爆炸。
+// 返回空字符串表示用户点了取消。
+#[tauri::command]
+async fn save_file(
+    app: AppHandle,
+    file_name: String,
+    data_base64: String,
+) -&gt; Result&lt;String, String&gt; {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("内容解码失败: {e}"))?;
+
+    let ext = std::path::Path::new(&amp;file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    let mut dlg = app.dialog().file().set_file_name(&amp;file_name);
+    if let Some(ref e) = ext {
+        dlg = dlg.add_filter(e.to_uppercase(), &amp;[e.as_str()]);
+    }
+
+    // 阻塞式 API 不能跑在主线程，所以这条命令声明为 async
+    let Some(picked) = dlg.blocking_save_file() else {
+        return Ok(String::new());
+    };
+    let path = picked.into_path().map_err(|e| format!("目标路径无效: {e}"))?;
+
+    fs::write(&amp;path, &amp;bytes).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![store_read, store_write, save_file])
+        .run(tauri::generate_context!())
+        .expect("Tauri 应用启动失败");
+}</code></pre>
+
+  <h3>capabilities/default.json</h3>
+<pre><code>{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口权限",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}</code></pre>
+
+  <div class="callout">
+    权限系统只需要 <code>core:default</code>。<strong>你自己写的命令（<code>store_read</code> / <code>store_write</code> / <code>save_file</code>）不受 capability 管辖</strong>——capability 管的是插件命令和核心命令。这一点很多人都搞混，然后去给自定义命令加权限，加了也没用还更迷糊。
+  </div>
+
+  <h3>开发与构建</h3>
+<pre><code>cd src-tauri
+cargo tauri dev       # 开发，改 web/ 下的文件后刷新窗口即可看到
+cargo tauri build     # 出安装包，产物在 src-tauri/target/release/bundle/</code></pre>
+  <p>因为没有 <code>devUrl</code>，<code>tauri dev</code> 会直接把 <code>web/</code> 目录当作前端资源提供，<strong>没有热重载</strong>。改完 HTML 手动按 F5 刷新窗口就行——对一个单文件应用来说，这比搭一套开发服务器简单得多。</p>
+</section>
+
+<section>
+  <h2><span class="n">06</span>前端补丁：三处必改</h2>
+
+  <h3>补丁 A · AppStore 写盘串行化 + 失败可见（解 H2 / H3）</h3>
+  <p>把现在的 <code>persist()</code> 换掉，并在 <code>set()</code> 的 native 分支把返回值改成真实的写盘结果：</p>
+<pre><code>// 替换原来的 persist()
+let writeChain = Promise.resolve();
+let writeOk = true;
+
+function persist() {
+  if (!T &amp;&amp; !E) return;
+  const payload = JSON.stringify(mem || {});
+  const run = T
+    ? () =&gt; T.invoke('store_write', { data: payload })
+    : () =&gt; Promise.resolve(E.writeAll(mem || {}));
+  // 串成一条链，保证写盘顺序和调用顺序一致，杜绝后写覆盖先写
+  writeChain = writeChain.then(run).then(
+    () =&gt; { writeOk = true; },
+    e =&gt; { writeOk = false; showToast('保存失败：' + (e &amp;&amp; e.message ? e.message : e)); }
+  );
+}</code></pre>
+  <p>同时把返回对象里的 <code>set</code> 改为：</p>
+<pre><code>set(key, value) {
+  if (native) {
+    if (!mem) mem = {};
+    mem[K(key)] = clone(value);
+    persist();
+    return writeOk;            // 原来是恒定的 true
+  }
+  // 浏览器分支保持原样
+  try { localStorage.setItem(K(key), JSON.stringify(value)); return true; }
+  catch (e) { return false; }
+}</code></pre>
+  <div class="callout warn">
+    <b>一个诚实的说明：</b>写盘是异步的，所以 <code>set()</code> 的返回值反映的是<strong>上一次</strong>写盘的结果——失败会在下一次保存时被工具感知到，同时 toast 会立刻弹出。这个「一次延迟」是可以接受的，因为画板的告警本来就是防抖保存后的兜底；要完全同步就得把工具代码改成 async，不值得。
+  </div>
+
+  <h3>补丁 B · 导出改走系统保存对话框（解 H1）</h3>
+  <p>在全局作用域加一个统一的保存函数，然后把导出调用点都换成它。</p>
+<pre><code>function blobToBase64(blob) {
+  return blob.arrayBuffer().then(function (ab) {
+    const buf = new Uint8Array(ab);
+    let s = '';
+    const CH = 0x8000;                      // 分块，避免 apply 参数过多爆栈
+    for (let i = 0; i &lt; buf.length; i += CH) {
+      s += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
+    }
+    return btoa(s);
+  });
+}
+
+// 桌面端走原生对话框；浏览器端保持原来的 <a download>
+async function saveBlob(blob, name) {
+  if (window.__TAURI__ &amp;&amp; window.__TAURI__.core) {
+    const b64 = await blobToBase64(blob);
+    const saved = await window.__TAURI__.core.invoke('save_file', {
+      fileName: name,
+      dataBase64: b64
+    });
+    if (!saved) { showToast('已取消导出'); return false; }
+    showToast('已保存到 ' + saved);
+    return true;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() =&gt; URL.revokeObjectURL(url), 2000);
+  return true;
+}</code></pre>
+
+  <p>然后替换这五处调用点：</p>
+  <table>
+    <tr><th style="width:230px">位置</th><th>怎么改</th></tr>
+    <tr><td>画板 <code>exportPNG()</code></td><td><code>c.toDataURL('image/png')</code> 这种 data URL 不能直接转 Blob，改成 <code>await new Promise(r =&gt; c.toBlob(r, 'image/png'))</code> 拿到 Blob，再 <code>await saveBlob(blob, name)</code>。</td></tr>
+    <tr><td>画板 <code>downloadBlob()</code></td><td>整个函数删掉，<code>exportSVG</code> / <code>exportJSON</code> 两处调用换成 <code>await saveBlob(blob, name)</code>。</td></tr>
+    <tr><td>Mermaid <code>download(url, name)</code></td><td>同上，改成拿 Blob 后调 <code>saveBlob</code>。<code>exportSVG</code> 里本来就构造了 <code>new Blob([lastGood], ...)</code>，直接传进来即可。</td></tr>
+    <tr><td>Mermaid <code>exportPNG()</code></td><td>它内部用 canvas 转图再 blob，换掉最后那一步的 download 调用。</td></tr>
+  </table>
+
+  <div class="callout">
+    别忘了给这些函数所在的 <code>mount</code> 加上 <code>async</code> 上下文所需的 <code>await</code>——<code>exportSVG</code> 之类目前是同步函数，改成 <code>async function</code> 后调用点不需要动（返回值没人接）。
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">07</span>Windows 专项坑位清单</h2>
+
+  <table>
+    <tr><th style="width:200px">坑</th><th>表现</th><th style="width:250px">对策</th></tr>
+    <tr>
+      <td>原生拖放吞事件</td>
+      <td>拖拽时出现禁止光标，<code>dragstart</code> 触发但 <code>dragover</code> / <code>drop</code> 永不触发。这是 Windows 的 OLE 拖放目标独占导致的，macOS / Linux 不存在</td>
+      <td><code>dragDropEnabled: false</code>。注意这是<strong>二选一</strong>：关掉之后你也拿不到原生文件路径。以后若要做「拖 JSON 进窗口导入」，就得翻回来改用 Tauri 的 <code>onDragDropEvent</code>，两者无法共存</td>
+    </tr>
+    <tr>
+      <td>只在配置里生效</td>
+      <td><code>dragDropEnabled</code> 写在 Rust 的 window builder 里会被静默忽略</td>
+      <td>窗口一律在 <code>tauri.conf.json</code> 里声明</td>
+    </tr>
+    <tr>
+      <td>WebView2 运行时</td>
+      <td>Win10 干净系统上双击无反应或提示缺少运行时</td>
+      <td>由 <code>bundle.windows.webviewInstallMode</code> 决定：<code>downloadBootstrapper</code>（安装时联网下载，包小）或 <code>embedBootstrapper</code>（离线可装，包大）。Win11 自带，没这个问题</td>
+    </tr>
+    <tr>
+      <td>字节数组走 IPC 体积爆炸</td>
+      <td>导出 5 MB 的 PNG，若按 <code>Vec&lt;u8&gt;</code> 传参，JSON 会把每个字节展开成 <code>255,</code> 这样的形式，payload 可能膨胀到十几 MB，界面卡顿</td>
+      <td>所以 <code>save_file</code> 收的是 base64 字符串而不是数组，Rust 侧用 <code>base64</code> crate 解码</td>
+    </tr>
+    <tr>
+      <td>IPC 参数命名</td>
+      <td>命令报「缺少参数 file_name」，但前端明明传了</td>
+      <td>前端 camelCase、Rust snake_case，Tauri 自动转换。两头都写 snake_case 反而会失败</td>
+    </tr>
+    <tr>
+      <td>控制台窗口</td>
+      <td>发布版双击后多一个黑框</td>
+      <td><code>main.rs</code> 第一行加 <code>#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]</code></td>
+    </tr>
+    <tr>
+      <td>剪贴板写图片</td>
+      <td>画板「复制 PNG」用的是 <code>navigator.clipboard.write([ClipboardItem])</code>，在 WebView 里可能被拒</td>
+      <td>代码里已有 try/catch 会提示「当前环境不支持」，属于可降级项，不必强求。若确实需要，再加 <code>tauri-plugin-clipboard-manager</code></td>
+    </tr>
+  </table>
+</section>
+
+<section>
+  <h2><span class="n">08</span>风险与明确不做的部分</h2>
+
+  <h3>明确不做</h3>
+  <ul>
+    <li><strong>不上 Tauri 3 / CEF 后端</strong>——目前是 early alpha。它的价值是解决跨平台 WebView 渲染差异，而你只面向 Windows，收益为零、风险不小。</li>
+    <li><strong>不引入 Vite / 打包器</strong>——现有代码是精心维护的单文件零依赖结构，引入构建链会把「双击就能跑」这个最大优势弄丢。Tauri 完全不要求前端有构建步骤。</li>
+    <li><strong>不在这一轮重构画板</strong>——画板是三个工具里最复杂的（约 1400 行），迁移期间不动它的内部逻辑，只改导出那几行。</li>
+    <li><strong>不动 Electron 分支</strong>——<code>window.NativeStore</code> 那段探测留着，不删。它是几行死代码，但删了以后如果哪天想试 Electron 就得重写。</li>
+  </ul>
+
+  <h3>遗留风险</h3>
+  <ul>
+    <li><strong>单点故障：整个 app 只有一个 <code>store.json</code>。</strong> 原子写能防写坏，但防不了误删和磁盘故障。建议第 1 档顺手加「保存时轮转保留最近 3 份备份」——代价很小，收益很大，毕竟画板和实习日志都是无法再生的数据。</li>
+    <li><strong><code>data-page-node-id</code> 残留</strong>——文件里 6 处，是页面编辑器留下的标记，不影响运行，可以在任意一次改动里顺手清掉。</li>
+    <li><strong>没有版本控制</strong>——迁移会新增十几个文件并移动 <code>index.html</code>，<strong>强烈建议先 <code>git init</code> 并提交一次现状</strong>，否则一旦走岔路就回不去。</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="n">09</span>需要你拍板的四件事</h2>
+  <table>
+    <tr><th style="width:40px">#</th><th style="width:200px">决策点</th><th>选项与建议</th></tr>
+    <tr>
+      <td>1</td>
+      <td>应用标识符<br><code>bundle.identifier</code></td>
+      <td>反向域名格式，全局唯一，且<strong>一旦确定就不要改</strong>——它决定数据目录路径，改了等于换个地方存数据。建议 <code>com.&lt;你的名字或缩写&gt;.toolbox</code>。你给一个，我就写进配置。</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><code>index.html</code> 是否移入 <code>web/</code></td>
+      <td>建议移入（干净、构建快、不会把 Rust 工程打进包）。除非你希望保持「浏览器双击 index.html 也能直接用」这条路径完全不变——那样可以让 <code>frontendDist</code> 指向根目录，但要额外处理打包排除。</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>画板图片是否外置（第 2 档）</td>
+      <td>如果你画板里经常插图、或者存档已经明显变大，就值得做；如果画板主要用来画图形和写便签，可以无限期跳过。</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>打包形态</td>
+      <td>默认出 NSIS 安装包（<code>.exe</code>）。是否需要额外加一个便携版（免安装、绿色解压即用）？考虑到这是自用工具，便携版其实挺合适。</td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    这四项里只有第 1 项是硬阻塞——不给标识符我没法生成配置。其余三项你都可以先回「按你建议的来」，我按推荐值落地，后续随时可调。
+  </div>
+</section>
+
+<footer>个人工具箱 · Tauri 迁移方案 · 2026-09-11</footer>
+
+</div>
+</body>
+</html>
