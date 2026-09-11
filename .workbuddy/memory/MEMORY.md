@@ -1,0 +1,49 @@
+# 个人工具箱 · 项目长期记忆
+
+## 是什么
+本地优先的个人工具箱，原为单文件网页 `index.html`，2026-09-11 迁移为 **Tauri 2 桌面应用**。
+三个工具：`internlog`（实习日志）、`sketch`（无限画板）、`mermaid`（Mermaid 编辑器）。
+
+## 目录结构与约定
+```
+web/index.html          前端全部代码（单文件，约 3400 行，无打包器）
+web/vendor/mermaid.min.js   离线用 mermaid 11（3.5 MB）
+src-tauri/              Cargo.toml / build.rs / tauri.conf.json / capabilities/ / src/ / icons/
+tools/make-icons.py          重新生成图标（Pillow）
+tools/verify-appstore.js     用 Node vm 验证 AppStore 双模式行为
+docs/tauri-迁移方案.html      迁移方案 + 实施记录
+```
+
+**硬约定**
+- **不引入 Vite/Webpack 等打包器**。前端永远是零构建单文件，`frontendDist: "../web"` 直接指向源目录。改完前端在应用里按 F5 刷新（无热重载）。
+- **归档 key 前缀统一 `toolbox:<tool>:<field>`**。`AppStore` 是唯一的存储入口，三后端自动探测（Tauri / Electron NativeStore / 浏览器 localStorage），接口签名一致，工具代码不感知环境。
+- 首页只显示 `ENABLED_TOOLS` 白名单里的工具；下线工具只需从白名单移除，**数据不会丢**。
+- 不动 `window.NativeStore`（Electron）那段死代码，留着以备将来。
+
+## 不可变项
+- `bundle.identifier` = **`com.lijiazhen.toolbox`** —— 决定数据目录，**有数据后绝不能改**。
+- 数据存档：`%APPDATA%\com.lijiazhen.toolbox\store.json`；轮转备份 `.1/.2/.3`（30 分钟节流）。
+
+## 关键实现决定
+- `tauri.conf.json` 四个必设：`withGlobalTauri: true`、`dragDropEnabled: false`、`frontendDist: "../web"`、`csp: null`。
+  - `dragDropEnabled: false` 是 Windows 必需，否则**首页卡片拖拽排序和画板拖入图片会同时失效**（原生 OLE 吞掉 HTML5 拖放事件）。此属性只在配置文件里生效。
+- Rust 三条命令（`src-tauri/src/lib.rs`）：`store_read` / `store_write`（校验 JSON → 轮转备份 → 临时文件 + rename 原子替换）/ `save_file`（原生另存为，收 base64 而非 `Vec<u8>`，必须 `async`）。
+- 前端导出统一走全局 `saveBlob(blob, name)`：桌面端调 `save_file`，浏览器端 `<a download>` 兜底。旧的 `downloadBlob()` / `download()` 已删除。
+- `AppStore.persist()` 用 Promise 链**串行化**写盘（防后写覆盖先写）；`set()` 返回真实写盘结果；暴露 `flush()` / `lastError()`。
+- 全量迁移：首页「导出全部数据 / 导入全部数据」，用 `AppStore.exportAll()` / `importAll()`，键带前缀原样往返。
+
+## 构建
+```bash
+npx -y @tauri-apps/cli@2 dev     # 迭代（cargo tauri 需先 cargo install tauri-cli）
+npx -y @tauri-apps/cli@2 build   # 出包 → src-tauri/target/release/bundle/nsis/
+```
+release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在出包时用。
+
+## 待办（第 2 档，均未开始）
+- 画板图片外置为文件（现在 base64 内联进 `shapes`，存档随图片膨胀）
+- 存档按 key 拆分，避免每次全量 stringify
+- 自动更新 / 托盘 / 开机自启
+- 清理 `index.html` 顶部 6 处 `data-page-node-id` 残留
+
+## 迁移前的历史数据
+`实习日志备份-2026-09-11.json`（项目根，4 条日志）—— 已导入桌面版。浏览器版 → 桌面版靠首页「导入全部数据」。
