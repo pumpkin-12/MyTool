@@ -29,14 +29,45 @@ const BACKUP_INTERVAL: Duration = Duration::from_secs(1800);
 #[derive(Default)]
 struct BackupGate(Mutex<Option<Instant>>);
 
+/// 用户指定的数据目录（不放系统盘）。所有 toolbox:* 键存在这一个 JSON 里。
+/// 放在项目目录下的 data/ 子文件夹，便于整体备份、不与源码混在一起。
+/// 若要改位置，只改这里即可（注意：改后旧数据不会自动出现在新目录，
+/// 除非保留下方 migrate_legacy 的迁移逻辑，或手动搬移）。
+const DATA_DIR: &str = "D:\\Ai-file\\MyTool\\data";
+
 /// 解析存档路径，顺便保证目录存在。
-fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("无法解析应用数据目录: {e}"))?;
+fn store_path() -> Result<PathBuf, String> {
+    let dir = PathBuf::from(DATA_DIR);
     fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
     Ok(dir.join(STORE_FILE))
+}
+
+/// 首次切到新数据目录时，若目标 store.json 不存在、但旧 %APPDATA% 位置有存档，
+/// 整体搬过来（含 .1/.2/.3 轮转备份）。保证切换存储路径不丢历史数据。
+/// 只在目标文件缺失时触发一次；之后不再触碰旧目录。
+fn migrate_legacy(app: &AppHandle) -> Result<(), String> {
+    let dir = PathBuf::from(DATA_DIR);
+    let new_path = dir.join(STORE_FILE);
+    if new_path.exists() {
+        return Ok(());
+    }
+    let old_dir = match app.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => return Ok(()),
+    };
+    let old_path = old_dir.join(STORE_FILE);
+    if !old_path.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    for ext in &["", ".1", ".2", ".3"] {
+        let from = old_dir.join(format!("store.json{}", ext));
+        let to = dir.join(format!("store.json{}", ext));
+        if from.exists() {
+            let _ = fs::copy(&from, &to);
+        }
+    }
+    Ok(())
 }
 
 /// 把当前存档轮转一份到 .1，原 .1 → .2 → .3，超出份数的丢弃。
@@ -71,7 +102,8 @@ fn rotate_backups(path: &std::path::Path, gate: &BackupGate) {
 /// 启动时一次性读全量存档。文件不存在不算错误，返回空对象即可。
 #[tauri::command]
 fn store_read(app: AppHandle) -> Result<String, String> {
-    let path = store_path(&app)?;
+    migrate_legacy(&app)?;
+    let path = store_path()?;
     match fs::read_to_string(&path) {
         Ok(s) => Ok(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".to_string()),
@@ -82,12 +114,12 @@ fn store_read(app: AppHandle) -> Result<String, String> {
 /// 全量写入。先校验 JSON 合法性，再经临时文件原子替换，
 /// 保证「写一半断电」不会留下半截损坏的存档。
 #[tauri::command]
-fn store_write(app: AppHandle, data: String, gate: State<'_, BackupGate>) -> Result<usize, String> {
+fn store_write(data: String, gate: State<'_, BackupGate>) -> Result<usize, String> {
     // 坏数据绝不落盘 —— 前端如果 stringify 出错，这里会拦住
     serde_json::from_str::<serde_json::Value>(&data)
         .map_err(|e| format!("拒绝写入：内容不是合法 JSON（{e}）"))?;
 
-    let path = store_path(&app)?;
+    let path = store_path()?;
 
     rotate_backups(&path, &gate);
 

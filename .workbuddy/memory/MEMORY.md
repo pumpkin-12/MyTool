@@ -22,7 +22,10 @@ docs/tauri-迁移方案.html      迁移方案 + 实施记录
 
 ## 不可变项
 - `bundle.identifier` = **`com.lijiazhen.toolbox`** —— 决定数据目录，**有数据后绝不能改**。
-- 数据存档：`%APPDATA%\com.lijiazhen.toolbox\store.json`；轮转备份 `.1/.2/.3`（30 分钟节流）。
+- 数据存档：**`D:\Ai-file\MyTool\data\store.json`**（用户 2026-09-11 指定，不放系统盘）；轮转备份 `.1/.2/.3`（30 分钟节流）。
+  - 改之前在 `%APPDATA%\com.lijiazhen.toolbox\store.json`。`lib.rs` 的 `store_path()` 现硬编码 `DATA_DIR = "D:\\Ai-file\\MyTool\\data"`。
+  - 首次切到新目录时，`migrate_legacy()` 会把旧 `%APPDATA%` 位置的 `store.json`(含 `.1/.2/.3`)整体拷贝过来，不丢历史；目标文件存在后不再触碰旧目录。
+  - **要改数据位置只改 `DATA_DIR` 一处**；改后旧数据不会自动出现，需保留迁移逻辑或手动搬。
 
 ## 关键实现决定
 - `tauri.conf.json` 四个必设：`withGlobalTauri: true`、`dragDropEnabled: false`、`frontendDist: "../web"`、`csp: null`。
@@ -56,16 +59,39 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 - 安装包 `PersonalToolbox_0.1.0_x64-setup.exe` = **1.92 MB**（不含刷题工具；重新 build 后约 +1 MB）
 - 便携版 `toolbox.exe` = **3.93 MB**（同上）
 - `index.html` 现为 217 KB / 4848 行（四个工具）
-- NSIS 工具链缓存：`%LOCALAPPDATA%\tauri\NSIS`（首次 build 时联网下载，之后离线可用）
+- NSIS 工具链缓存：`%LOCALAPPDATA%\tauri\NSIS`（首次 build 时联网下载，之后离线可用，**勿删**）
+
+## 磁盘占用基准（2026-09-14 实测）
+- 项目总 **8 603 MB / 10 736 文件**，`src-tauri/target/` 独占 **8 595.8 MB（99.7%）**：
+  `debug` 6 490 MB（incremental 966 / deps 3 624 / build 731 / toolbox.pdb 109.9）、`release` 2 105 MB（deps 1 737 / build 358）
+- **非 target 全部文件仅 49 个 / 约 8.1 MB** —— 瘦身源码毫无意义
+- **`target/` 可随时全清**，唯一要保留的是 `release/toolbox.exe`（4.2 MB）+ `release/bundle/nsis/*.exe`（2.2 MB）
+- 清理命令：`cargo clean --profile dev` 清 debug；release 手工删 `deps/ build/ .fingerprint/ *.pdb *.lib *.rlib *.d`
+- 待清理：`%APPDATA%\com.lijiazhen.toolbox`（旧数据目录 0.26 MB，最后写入 9/11，已确认废弃）
+- `.cargo\registry` 1 351 MB 是**全局共享**的依赖缓存，不属本项目
+- 详细方案见 `docs/内容占用优化方案.md`
+
+## 运行期占用基准（2026-09-14 实测）
+- 应用开起来是 **7 个进程**：`toolbox.exe` + 6 个 `msedgewebview2.exe`，合计约 **353 MB**。
+- **WebView2 固定开销 236 MB**（浏览器主进程 124.4 + gpu 63.0 + network 32.9 + storage 20.5 + crashpad 16.1）—— **这是每个 WebView2 应用的门票，不可优化，进程数也降不下来**。
+- Rust 宿主只有 **27.4 MB**（私有 7.3 MB）—— 已经很轻，无需动。
+- renderer 69.2 MB 是唯一可影响的；**其中大头是 mermaid**。
+- ✏️ **待修：mermaid 常驻内存**（`index.html:3439` 进页即 `loadLib()`，`dispose()` 不释放 `lib`）→ 进过一次 Mermaid 页就常驻 60~100 MB。修法：按需加载 + `dispose` 里 `lib = null` 并移除注入的 `<script>`。**不裁剪包体**（那要打包器）。
+- WebView2 数据目录 `%LOCALAPPDATA%\com.lijiazhen.toolbox\EBWebView` = 38 MB，**在 C 盘，与 D 盘 store.json 无关**（已确认不含 store.json）；其中 16.1 MB（Subresource Filter / Speech Recognition / BrowserMetrics）对本应用零价值。
+- 特性开关：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 必须在 `run()` 里 WebView2 初始化**之前** `set_var`。
+- 系统内存：总 15.7 GB，属实偏紧（已用 74%）。
 
 ## dev 与 release 共用数据目录
-`tauri dev` 和装好的应用读同一个 `%APPDATA%\com.lijiazhen.toolbox\store.json`（由 identifier 决定），所以调试时的数据在正式版里直接可见。
+`tauri dev` 和装好的应用读同一个 **`D:\Ai-file\MyTool\data\store.json`**（现由 `DATA_DIR` 硬编码决定，不再依赖 identifier），所以调试时的数据在正式版里直接可见。
 
 ## 待办（第 2 档，均未开始）
-- 画板图片外置为文件（现在 base64 内联进 `shapes`，存档随图片膨胀）
-- 存档按 key 拆分，避免每次全量 stringify
+- **mermaid 改为按需加载 + 离开释放**（运行期最大收益，预计省 60~100 MB；只动 `index.html` 的 `loadLib` / `dispose`，约 20 行）
+- **画板图片外置为文件**（现在 base64 内联进 `shapes`，存档随图片膨胀；`sketch:shapes` 目前仅 0.2 KB，**插图片前必须做**：落 `data/assets/<sha1>.<ext>`，`shapes` 只存引用）
+- 存档按 key 拆分，避免每次全量 stringify（`quiz:questions` 已占存档 88%，画板改一下也要重写这 160 KB）
 - 自动更新 / 托盘 / 开机自启
 - 清理 `index.html` 顶部 6 处 `data-page-node-id` 残留
+- 清理 `target/`（回收 8.6 GB，见「磁盘占用基准」）
+- 归档 `docs/*.html` 两份旧格式方案（今后方案一律 `.md`）
 
 ## 迁移前的历史数据
 `实习日志备份-2026-09-11.json`（项目根，4 条日志）—— 已导入桌面版。浏览器版 → 桌面版靠首页「导入全部数据」。

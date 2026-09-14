@@ -3816,6 +3816,8 @@ registerTool({
       });
     }
     function nextQid() { return QuizCore.nextId(questions); }
+    /* 按 id 建索引，避免循环里反复 questions.find（题库大时是 O(n²)） */
+    function qById() { return new Map(questions.map(q => [q.id, q])); }
 
     /* 从进行中的会话里同步移除已删除的题目。
      * 不做的话：交卷时 syncWrongOnSubmit 会把已删题的 id 写进错题本，
@@ -3848,8 +3850,9 @@ registerTool({
     el.innerHTML = '<div></div>';
     const root = el.firstElementChild;
 
-    function esc2(s) { return esc(s); }
-    function tag(text, cls) { return '<span class="qz-tag' + (cls ? ' ' + cls : '') + '">' + esc2(text) + '</span>'; }
+    function tag(text, cls) { return '<span class="qz-tag' + (cls ? ' ' + cls : '') + '">' + esc(text) + '</span>'; }
+    /* 正确/错误题型的答案归一化成 A/B，但界面对外展示用「正确/错误」更直观 */
+    function answerLabel(q, ans) { return q.type === 'truefalse' ? (ans === 'A' ? '正确' : '错误') : ans; }
     function typeTag(t) { return tag(QuizCore.TYPE_LABEL[t] || t); }
 
     function setTab(t) { tab = t; render(); }
@@ -3872,6 +3875,8 @@ registerTool({
 
     /* ================= 渲染入口 ================= */
     function render() {
+      /* 防御：tab 若为未知值（例如误绑定把 tab 设成 undefined），回落仪表盘，绝不留下空白面板 */
+      if (['dash', 'quiz', 'bank', 'wrong', 'records', 'stats'].indexOf(tab) < 0) tab = 'dash';
       root.innerHTML =
         '<div class="qz-tabs">' +
           ['dash:仪表盘', 'quiz:答题', 'bank:题库', 'wrong:错题本', 'records:记录', 'stats:统计']
@@ -3887,7 +3892,9 @@ registerTool({
       else if (tab === 'wrong') panel.innerHTML = viewWrong();
       else if (tab === 'records') panel.innerHTML = viewRecords();
       else if (tab === 'stats') panel.innerHTML = viewStats();
-      root.querySelectorAll('.qz-tab').forEach(b =>
+      /* 只绑主标签。题库题型按钮同样用了 .qz-tab 做样式，但它们没有 data-tab；
+       * 不限定 [data-tab] 的话点题型会把 tab 设成 undefined → 面板留空（白屏）。 */
+      root.querySelectorAll('.qz-tab[data-tab]').forEach(b =>
         b.addEventListener('click', () => setTab(b.dataset.tab)));
       if (tab === 'quiz') bindQuiz();
       if (tab === 'wrong') bindWrong();
@@ -3913,7 +3920,7 @@ registerTool({
       if (s.modeStats.length) {
         html += '<div class="qz-tbl-wrap"><table class="qz-tbl"><thead><tr>' +
           '<th>模式</th><th>次数</th><th>平均分</th></tr></thead><tbody>' +
-          s.modeStats.map(m => '<tr><td>' + esc2(m.modeName) + '</td><td>' + m.count + '</td><td>' + m.avgScore + '</td></tr>').join('') +
+          s.modeStats.map(m => '<tr><td>' + esc(m.modeName) + '</td><td>' + m.count + '</td><td>' + m.avgScore + '</td></tr>').join('') +
           '</tbody></table></div>';
       }
       const dist = QuizCore.typeDistribution(questions);
@@ -3924,7 +3931,7 @@ registerTool({
       if (progress) {
         html += '<div class="qz-q" style="margin-top:8px;"><div class="qz-bar" style="margin:0;">' +
           '<span>' + tag('有未完成的答题') + '</span>' +
-          '<span class="hint">' + esc2(QuizCore.MODE_NAMES[progress.mode] || progress.mode) +
+          '<span class="hint">' + esc(QuizCore.MODE_NAMES[progress.mode] || progress.mode) +
           ' · 进度 ' + ((progress.currentIndex || 0) + 1) + '/' + (progress.questionIds || []).length + '</span>' +
           '<button class="btn btn-sm" data-act="resume">继续</button>' +
           '<button class="btn btn-sm" data-act="drop">放弃</button></div></div>';
@@ -3966,27 +3973,30 @@ registerTool({
       const q = session.questions[session.currentIndex];
       const total = session.questions.length;
       const modeName = QuizCore.MODE_NAMES[session.mode] || session.mode;
-      let html = '<div class="qz-bar"><strong>' + esc2(modeName) + '</strong>' +
+      let html = '<div class="qz-bar"><strong>' + esc(modeName) + '</strong>' +
         '<span class="hint">共 ' + total + ' 题</span>';
       if (session.maxTime) html += '<span class="qz-timer" data-timer></span>';
       html += '<span class="sp">' +
         '<button class="btn btn-sm" data-act="save">保存进度</button>' +
         '<button class="btn btn-sm" data-act="exit">退出</button></span></div>';
 
-      const answeredJudged = session.answers.filter((a, i) => a != null && QuizCore.isJudged(session.questions[i].type));
-      let liveRight = 0;
+      let answered = 0, answeredJudged = 0, liveRight = 0;
       for (let i = 0; i < session.questions.length; i++) {
-        if (session.answers[i] != null && QuizCore.isJudged(session.questions[i].type)
-            && QuizCore.judge(session.questions[i], session.answers[i]).correct) liveRight++;
+        const a = session.answers[i];
+        if (a == null) continue;
+        answered++;
+        if (!QuizCore.isJudged(session.questions[i].type)) continue;
+        answeredJudged++;
+        if (QuizCore.judge(session.questions[i], a).correct) liveRight++;
       }
-      html += '<div class="qz-bar"><span class="hint">已答 ' + session.answers.filter(a => a != null).length + '/' + total +
-        '</span><span class="hint">可判题 ' + answeredJudged.length + '</span>' +
+      html += '<div class="qz-bar"><span class="hint">已答 ' + answered + '/' + total +
+        '</span><span class="hint">可判题 ' + answeredJudged + '</span>' +
         '<span class="hint">答对 ' + liveRight + '</span></div>';
 
       html += '<div class="qz-q"><div class="qz-bar" style="margin:0 0 10px;">' +
         '<span class="hint">第 ' + (session.currentIndex + 1) + ' / ' + total + ' 题</span>' +
         typeTag(q.type) + (q.category ? tag(q.category) : '') + '</div>' +
-        '<div class="qz-qtext">' + esc2(q.text) + '</div>' + optionsHtml(q) + '</div>';
+        '<div class="qz-qtext">' + esc(q.text) + '</div>' + optionsHtml(q) + '</div>';
 
       if (q.type === 'fill' || q.type === 'essay') {
         html += '<textarea class="field" rows="4" data-free placeholder="在此作答（不自动判分）"></textarea>';
@@ -4028,19 +4038,19 @@ registerTool({
           else if (o[0] === sel && !res.correct) cls += ' bad';
         } else if (o[0] === sel) cls += ' on';
         return '<div class="' + cls + '" data-opt="' + o[0] + '"><span class="k">' + o[0] + '.</span><span class="v">' +
-          esc2(o[1]) + '</span></div>';
+          esc(o[1]) + '</span></div>';
       }).join('') + (done
-        ? '<div class="hint" style="margin-top:8px;">' + (res.correct ? '回答正确' : '回答错误，正确答案 ' + esc2(res.correctAnswer)) +
-          (res.explanation ? '<br>解析：' + esc2(res.explanation) : '') + '</div>'
+        ? '<div class="hint" style="margin-top:8px;">' + (res.correct ? '回答正确' : '回答错误，正确答案 ' + answerLabel(q, res.correctAnswer)) +
+          (res.explanation ? '<br>解析：' + esc(res.explanation) : '') + '</div>'
         : '');
     }
 
     function viewResult() {
       const g = result.grade;
       const modeName = QuizCore.MODE_NAMES[result.mode] || result.mode;
-      const byId2 = id => questions.find(q => q.id === id);
+      const byId = qById();
       let html = '<div class="qz-stats">' +
-        '<div><div class="k">模式</div><div class="v" style="font-size:16px;">' + esc2(modeName) + '</div></div>' +
+        '<div><div class="k">模式</div><div class="v" style="font-size:16px;">' + esc(modeName) + '</div></div>' +
         '<div><div class="k">得分</div><div class="v">' + g.score + '</div></div>' +
         '<div><div class="k">正确</div><div class="v" style="color:var(--ok);">' + g.correctCount + '</div></div>' +
         '<div><div class="k">错误</div><div class="v" style="color:var(--err);">' + g.wrongCount + '</div></div>' +
@@ -4048,11 +4058,12 @@ registerTool({
         '<div><div class="k">总题数</div><div class="v">' + g.totalQuestions + '</div></div>' +
         '<div><div class="k">用时</div><div class="v" style="font-size:16px;">' + QuizCore.fmtDuration(result.elapsed) + '</div></div>' +
         '</div>';
-      html += '<table class="qz-tbl"><thead><tr><th class="num">#</th><th>题目</th><th>你的答案</th><th>判定</th></tr></thead><tbody>';
+      html += '<table class="qz-tbl"><thead><tr><th class="num">#</th><th>题目</th><th>你的答案</th><th>正确答案</th><th>判定</th></tr></thead><tbody>';
       g.details.forEach((d, i) => {
-        const q = byId2(d.questionId);
-        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + (q ? esc2(q.text) : '<em>已删除</em>') +
-          '</td><td>' + (d.selected == null || d.selected === '' ? '<span class="hint">未答</span>' : esc2(d.selected)) +
+        const q = byId.get(d.questionId);
+        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + (q ? esc(q.text) : '<em>已删除</em>') +
+          '</td><td>' + (d.selected == null || d.selected === '' ? '<span class="hint">未答</span>' : esc(q ? answerLabel(q, d.selected) : d.selected)) +
+          '</td><td>' + (q ? esc(answerLabel(q, q.answer)) : '<em>—</em>') +
           '</td><td>' + (d.correct ? tag('对', 'ok') : tag('错', 'bad')) + '</td></tr>';
       });
       html += '</tbody></table>';
@@ -4071,7 +4082,7 @@ registerTool({
         else if (a === 'exit') b.addEventListener('click', exitQuiz);
         else if (a === 'prev') b.addEventListener('click', () => { commitFree(); go(-1); });
         else if (a === 'next') b.addEventListener('click', () => { commitFree(); go(1); });
-        else if (a === 'submit') b.addEventListener('click', () => { commitFree(); submitQuiz(); });
+        else if (a === 'submit') b.addEventListener('click', () => { commitFree(); requestSubmit(); });
         else if (a === 'again') b.addEventListener('click', () => { result = null; render(); });
         else if (a === 'back') b.addEventListener('click', () => { result = null; session = null; render(); });
       });
@@ -4226,11 +4237,21 @@ registerTool({
       render();
     }
 
-    function exitQuiz() {
+    async function exitQuiz() {
+      if (!session) return;
+      if (!(await askConfirm('退出本次答题？未保存的进度将丢失。', '退出'))) return;
       stopTimer();
       session = null;
       result = null;
       render();
+    }
+
+    /* 用户主动交卷：有未答题先确认；倒计时自动交卷走 submitQuiz，不打扰 */
+    async function requestSubmit() {
+      if (!session) return;
+      const unanswered = session.answers.filter(a => a == null).length;
+      if (unanswered > 0 && !(await askConfirm('还有 ' + unanswered + ' 题未作答，确定提交？', '提交'))) return;
+      submitQuiz();
     }
 
     function submitQuiz() {
@@ -4265,8 +4286,8 @@ registerTool({
       const dist = QuizCore.typeDistribution(questions);
       let html = '<div class="qz-bar">' +
         '<select class="field" style="width:160px;" data-bank-cat><option value="">全部分类</option>' +
-        cats.map(c => '<option' + (bankCat === c ? ' selected' : '') + '>' + esc2(c) + '</option>').join('') + '</select>' +
-        '<input class="field" style="width:200px;" placeholder="搜索题目..." data-bank-search value="' + esc2(bankSearch) + '">' +
+        cats.map(c => '<option' + (bankCat === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select>' +
+        '<input class="field" style="width:200px;" placeholder="搜索题目..." data-bank-search value="' + esc(bankSearch) + '">' +
         '<button class="btn btn-sm" data-bank-refresh>刷新</button></div>';
       html += '<div class="qz-tabs">' + QuizCore.TYPES.map(t =>
         '<button class="qz-tab' + (bankTab === t ? ' on' : '') + '" data-bank-tab="' + t + '">' +
@@ -4285,18 +4306,7 @@ registerTool({
       if (!list.length) {
         html += '<div class="empty">暂无题目</div>';
       } else {
-        html += '<table class="qz-tbl"><thead><tr><th class="num">#</th><th style="width:90px;">分类</th><th>题目</th>' +
-          (bankTab === 'choice' ? '<th>A</th><th>B</th><th>C</th><th>D</th>' : '') +
-          '<th style="width:70px;">答案</th><th class="act">操作</th></tr></thead><tbody>';
-        list.forEach((q, i) => {
-          html += '<tr><td class="num">' + (i + 1) + '</td><td>' + (q.category ? tag(q.category) : '<span class="hint">—</span>') +
-            '</td><td>' + esc2(q.text) + '</td>' +
-            (bankTab === 'choice' ? '<td>' + esc2(q.optionA) + '</td><td>' + esc2(q.optionB) + '</td><td>' + esc2(q.optionC) + '</td><td>' + esc2(q.optionD) + '</td>' : '') +
-            '<td>' + tag(q.answer) + '</td>' +
-            '<td class="act"><button class="btn btn-sm" data-edit="' + q.id + '">编辑</button> ' +
-            '<button class="btn btn-sm" data-del="' + q.id + '">删除</button></td></tr>';
-        });
-        html += '</tbody></table>';
+        html += bankTableHtml(list);
       }
       html += '<input type="file" accept=".xlsx,.xls" data-bank-file style="display:none;">';
       return html;
@@ -4342,8 +4352,8 @@ registerTool({
         '<th style="width:70px;">答案</th><th class="act">操作</th></tr></thead><tbody>';
       list.forEach((q, i) => {
         html += '<tr><td class="num">' + (i + 1) + '</td><td>' + (q.category ? tag(q.category) : '<span class="hint">—</span>') +
-          '</td><td>' + esc2(q.text) + '</td>' +
-          (bankTab === 'choice' ? '<td>' + esc2(q.optionA) + '</td><td>' + esc2(q.optionB) + '</td><td>' + esc2(q.optionC) + '</td><td>' + esc2(q.optionD) + '</td>' : '') +
+          '</td><td>' + esc(q.text) + '</td>' +
+          (bankTab === 'choice' ? '<td>' + esc(q.optionA) + '</td><td>' + esc(q.optionB) + '</td><td>' + esc(q.optionC) + '</td><td>' + esc(q.optionD) + '</td>' : '') +
           '<td>' + tag(q.answer) + '</td>' +
           '<td class="act"><button class="btn btn-sm" data-edit="' + q.id + '">编辑</button> ' +
           '<button class="btn btn-sm" data-del="' + q.id + '">删除</button></td></tr>';
@@ -4395,20 +4405,20 @@ registerTool({
           '<div style="font-weight:500;margin-bottom:12px;">' + (editForm.mode === 'edit' ? '编辑题目' : '添加题目') + '</div>' +
           '<div class="qz-bar"><select class="field" style="width:150px;" data-f="type">' +
             QuizCore.TYPES.map(t => '<option value="' + t + '"' + (d.type === t ? ' selected' : '') + '>' + QuizCore.TYPE_LABEL[t] + '</option>').join('') + '</select>' +
-            '<input class="field" style="flex:1;" placeholder="分类（可留空）" data-f="category" value="' + esc2(d.category) + '"></div>' +
-          '<textarea class="field" rows="3" placeholder="题目内容" data-f="text" style="margin-bottom:10px;">' + esc2(d.text) + '</textarea>' +
+            '<input class="field" style="flex:1;" placeholder="分类（可留空）" data-f="category" value="' + esc(d.category) + '"></div>' +
+          '<textarea class="field" rows="3" placeholder="题目内容" data-f="text" style="margin-bottom:10px;">' + esc(d.text) + '</textarea>' +
           (isChoice
-            ? '<div class="qz-bar"><input class="field" style="flex:1;" placeholder="选项 A" data-f="optionA" value="' + esc2(d.optionA) + '">' +
-              '<input class="field" style="flex:1;" placeholder="选项 B" data-f="optionB" value="' + esc2(d.optionB) + '"></div>' +
-              '<div class="qz-bar"><input class="field" style="flex:1;" placeholder="选项 C（可选）" data-f="optionC" value="' + esc2(d.optionC) + '">' +
-              '<input class="field" style="flex:1;" placeholder="选项 D（可选）" data-f="optionD" value="' + esc2(d.optionD) + '"></div>'
+            ? '<div class="qz-bar"><input class="field" style="flex:1;" placeholder="选项 A" data-f="optionA" value="' + esc(d.optionA) + '">' +
+              '<input class="field" style="flex:1;" placeholder="选项 B" data-f="optionB" value="' + esc(d.optionB) + '"></div>' +
+              '<div class="qz-bar"><input class="field" style="flex:1;" placeholder="选项 C（可选）" data-f="optionC" value="' + esc(d.optionC) + '">' +
+              '<input class="field" style="flex:1;" placeholder="选项 D（可选）" data-f="optionD" value="' + esc(d.optionD) + '"></div>'
             : '') +
           (isTF
             ? '<div class="qz-bar"><label style="font-size:13px;"><input type="radio" name="tf" value="A"' + (d.answer === 'A' || !d.answer ? ' checked' : '') + '> 正确 (A)</label>' +
               '<label style="font-size:13px;"><input type="radio" name="tf" value="B"' + (d.answer === 'B' ? ' checked' : '') + '> 错误 (B)</label></div>'
             : '') +
-          (!isTF ? '<textarea class="field" rows="2" placeholder="答案' + (isChoice ? '（A/B/C/D）' : '') + '" data-f="answer">' + esc2(d.answer) + '</textarea>' : '') +
-          '<textarea class="field" rows="2" placeholder="解析（可留空）" data-f="explanation" style="margin-top:10px;">' + esc2(d.explanation) + '</textarea>' +
+          (!isTF ? '<textarea class="field" rows="2" placeholder="答案' + (isChoice ? '（A/B/C/D）' : '') + '" data-f="answer">' + esc(d.answer) + '</textarea>' : '') +
+          '<textarea class="field" rows="2" placeholder="解析（可留空）" data-f="explanation" style="margin-top:10px;">' + esc(d.explanation) + '</textarea>' +
           '<div class="qz-bar" style="margin-top:14px;justify-content:flex-end;">' +
             '<button class="btn" data-fcancel>取消</button>' +
             '<button class="btn btn-primary" data-fsave>保存</button></div>' +
@@ -4505,6 +4515,7 @@ registerTool({
         if (iText < 0 || iAns < 0) { showToast('表头缺少「题目」或「答案」列'); return; }
         let added = 0, failed = 0, firstErr = '';
         const now = new Date().toISOString();
+        let maxId = QuizCore.nextId(questions);   // 循环外算一次最大 id，逐行自增，避免每行全量扫描
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
           const get = k => (k >= 0 && row[k] != null) ? String(row[k]).trim() : '';
@@ -4517,7 +4528,7 @@ registerTool({
               optionA: get(iA), optionB: get(iB), optionC: get(iC), optionD: get(iD),
               explanation: get(iExp)
             });
-            questions.push(Object.assign({ id: nextQid(), createdAt: now, updatedAt: now }, clean));
+            questions.push(Object.assign({ id: maxId++, createdAt: now, updatedAt: now }, clean));
             added++;
           } catch (e) { failed++; if (!firstErr) firstErr = '第 ' + (i + 1) + ' 行：' + e.message; }
         }
@@ -4528,16 +4539,18 @@ registerTool({
 
     /* ================= 错题本 ================= */
     function viewWrong() {
-      const list = wrong.map(w => ({ w: w, q: questions.find(q => q.id === w.questionId) })).filter(x => x.q);
+      const byId = qById();
+      const list = wrong.map(w => { const q = byId.get(w.questionId); return q ? { w: w, q: q } : null; }).filter(x => x);
       if (!list.length) return '<div class="empty">错题本是空的</div>';
       let html = '<div class="qz-bar">' +
         '<button class="btn btn-sm btn-primary" data-wrong-practice>错题重做</button>' +
+        '<button class="btn btn-sm" data-wrong-export>导出 Excel</button>' +
         '<button class="btn btn-sm" data-wrong-clear>清空错题本</button>' +
         '<span class="sp">共 ' + list.length + ' 题</span></div>';
       html += '<table class="qz-tbl"><thead><tr><th class="num">#</th><th>题目</th><th style="width:70px;">答案</th>' +
         '<th style="width:70px;">答错次数</th><th class="act">操作</th></tr></thead><tbody>';
       list.forEach((x, i) => {
-        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + esc2(x.q.text) + '</td><td>' + tag(x.q.answer) +
+        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + esc(x.q.text) + '</td><td>' + tag(x.q.answer) +
           '</td><td>' + x.w.wrongCount + '</td>' +
           '<td class="act"><button class="btn btn-sm" data-wrong-del="' + x.q.id + '">移除</button></td></tr>';
       });
@@ -4546,12 +4559,15 @@ registerTool({
     function bindWrong() {
       const p = root.querySelector('[data-wrong-practice]');
       if (p) p.addEventListener('click', () => {
-        const list = wrong.map(w => questions.find(q => q.id === w.questionId)).filter(Boolean);
+        const byId = qById();
+        const list = wrong.map(w => byId.get(w.questionId)).filter(Boolean);
         if (!list.length) { showToast('错题本是空的'); return; }
         session = { mode: 'wrong', questions: list, answers: new Array(list.length).fill(null),
                     currentIndex: 0, elapsed: 0, maxTime: null, startTime: Date.now() };
         result = null; tab = 'quiz'; render();
       });
+      const ex = root.querySelector('[data-wrong-export]');
+      if (ex) ex.addEventListener('click', exportWrong);
       const c = root.querySelector('[data-wrong-clear]');
       if (c) c.addEventListener('click', async () => {
         if (!wrong.length) return;
@@ -4565,6 +4581,30 @@ registerTool({
         }));
     }
 
+    /* 错题本导出成 Excel。列覆盖全部题型；判断题答案经 answerLabel 归一为「正确/错误」，
+     * 与导入模板的解析规则兼容（normalizeTFStrict 认得「正确」），可原样再导回。 */
+    function exportWrong() {
+      const byId = qById();
+      const rows = [['编号', '题型', '分类', '题目', '答案', '解析', '答错次数']];
+      let n = 0;
+      wrong.forEach(w => {
+        const q = byId.get(w.questionId);
+        if (!q) return;
+        n++;
+        rows.push([n, QuizCore.TYPE_LABEL[q.type] || q.type, q.category || '', q.text || '',
+          answerLabel(q, q.answer) || '', q.explanation || '', w.wrongCount]);
+      });
+      if (n === 0) { showToast('错题本是空的'); return; }
+      loadXlsx().then(XLSX => {
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '错题本');
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([wbout], { type: 'application/octet-stream' });
+        saveBlob(blob, '错题本.xlsx').then(ok => { if (ok) showToast('错题本已导出'); });
+      }).catch(e => showToast(e.message));
+    }
+
     /* ================= 答题记录 ================= */
     function viewRecords() {
       if (!records.length) return '<div class="empty">还没有答题记录</div>';
@@ -4574,19 +4614,20 @@ registerTool({
         '<th>得分</th><th>对/错</th><th>用时</th><th class="act">操作</th></tr></thead><tbody>';
       records.forEach((r, i) => {
         const t = r.completedAt ? r.completedAt.slice(0, 16).replace('T', ' ') : '—';
-        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + esc2(t) + '</td><td>' +
-          esc2(QuizCore.MODE_NAMES[r.mode] || r.mode) + '</td><td>' + r.score +
+        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + esc(t) + '</td><td>' +
+          esc(QuizCore.MODE_NAMES[r.mode] || r.mode) + '</td><td>' + r.score +
           '</td><td><span style="color:var(--ok);">' + r.correctCount + '</span>/<span style="color:var(--err);">' + r.wrongCount + '</span>' +
           '</td><td>' + QuizCore.fmtDuration(r.elapsedSeconds) + '</td>' +
           '<td class="act"><button class="btn btn-sm" data-rec-open="' + r.id + '">' + (recordOpen === r.id ? '收起' : '详情') + '</button> ' +
           '<button class="btn btn-sm" data-rec-del="' + r.id + '">删除</button></td></tr>';
         if (recordOpen === r.id) {
-          const byId2 = id => questions.find(q => q.id === id);
+          const byId = qById();
           html += '<tr><td></td><td colspan="6"><table class="qz-tbl">' +
             (r.answerDetails || []).map((d, j) => {
-              const q = byId2(d.questionId);
-              return '<tr><td class="num">' + (j + 1) + '</td><td>' + (q ? esc2(q.text) : '<em>已删除</em>') +
-                '</td><td>' + (d.selected == null || d.selected === '' ? '<span class="hint">未答</span>' : esc2(d.selected)) +
+              const q = byId.get(d.questionId);
+              return '<tr><td class="num">' + (j + 1) + '</td><td>' + (q ? esc(q.text) : '<em>已删除</em>') +
+                '</td><td>' + (d.selected == null || d.selected === '' ? '<span class="hint">未答</span>' : esc(q ? answerLabel(q, d.selected) : d.selected)) +
+                '</td><td>' + (q ? esc(answerLabel(q, q.answer)) : '<em>—</em>') +
                 '</td><td>' + (d.correct ? tag('对', 'ok') : tag('错', 'bad')) + '</td></tr>';
             }).join('') + '</table></td></tr>';
         }
@@ -4614,6 +4655,25 @@ registerTool({
     }
 
     /* ================= 统计 ================= */
+    /* 最近得分趋势：内联 SVG 折线，最多最近 20 次，按时间正序，纵轴 0-100。不引第三方图表库。 */
+    function trendChart() {
+      const data = records.slice(0, 20).map(r => Number(r.score) || 0).reverse();
+      if (data.length < 2) return '';
+      const W = 620, H = 140, pad = 24;
+      const stepX = (W - pad * 2) / (data.length - 1);
+      const yOf = v => H - pad - (Math.max(0, Math.min(100, v)) / 100) * (H - pad * 2);
+      const xs = data.map((v, i) => pad + i * stepX);
+      const poly = data.map((v, i) => xs[i].toFixed(1) + ',' + yOf(v).toFixed(1)).join(' ');
+      const dots = data.map((v, i) =>
+        '<circle cx="' + xs[i].toFixed(1) + '" cy="' + yOf(v).toFixed(1) + '" r="2.5" fill="#1D9E75"/>').join('');
+      const grid = [0, 50, 100].map(g =>
+        '<line x1="' + pad + '" y1="' + yOf(g).toFixed(1) + '" x2="' + (W - pad) + '" y2="' + yOf(g).toFixed(1) +
+        '" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 4"/>' +
+        '<text x="2" y="' + (yOf(g) + 3).toFixed(1) + '" font-size="9" fill="var(--muted,#888)">' + g + '</text>').join('');
+      return '<div class="qz-bar" style="margin-top:16px;"><span class="hint">最近得分趋势（最多 20 次）</span></div>' +
+        '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;">' +
+        grid + '<polyline fill="none" stroke="#1D9E75" stroke-width="2" points="' + poly + '"/>' + dots + '</svg>';
+    }
     function viewStats() {
       const s = QuizCore.stats(questions, records, wrong);
       const card = (k, v) => '<div><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
@@ -4624,9 +4684,10 @@ registerTool({
         card('累计用时', QuizCore.fmtDuration(s.cumulativeTime)) + '</div>';
       if (s.modeStats.length) {
         html += '<table class="qz-tbl"><thead><tr><th>模式</th><th>次数</th><th>平均分</th></tr></thead><tbody>' +
-          s.modeStats.map(m => '<tr><td>' + esc2(m.modeName) + '</td><td>' + m.count + '</td><td>' + m.avgScore + '</td></tr>').join('') +
+          s.modeStats.map(m => '<tr><td>' + esc(m.modeName) + '</td><td>' + m.count + '</td><td>' + m.avgScore + '</td></tr>').join('') +
           '</tbody></table>';
       } else html += '<div class="empty">还没有答题记录</div>';
+      html += trendChart();
       return html;
     }
 
@@ -4645,7 +4706,7 @@ registerTool({
       else if (e.key === 'ArrowRight') { commitFree(); go(1); }
       else if (e.key === 'Enter') {
         commitFree();
-        if (session.currentIndex === session.questions.length - 1) submitQuiz();
+        if (session.currentIndex === session.questions.length - 1) requestSubmit();
         else go(1);
       }
     }

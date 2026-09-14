@@ -14,3 +14,6 @@ _*.txt
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# 应用数据（用户指定存项目目录，不入仓）
+data/
