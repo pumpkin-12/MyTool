@@ -2997,18 +2997,33 @@ registerTool({
     /* 加载 Mermaid：本地 vendor 与 CDN 互为回退
      * 桌面端优先本地（离线可用）；浏览器优先 CDN（省一次 404 请求）。
      * 本地是 UMD 版（挂 window.mermaid），CDN 是 ESM 版，取到的对象用法一致。 */
+    /* 已注入到 head 的 mermaid <script> 集合。
+     * 注意：必须在 appendChild 之前登记，不能等 onload——
+     * 否则「加载中就切走」时该 script 无人清理，会永久留在 head 里。 */
+    const injectedScripts = new Set();
+    function dropInjected(s) {
+      if (!s) return;
+      injectedScripts.delete(s);
+      if (s.parentNode) { try { s.parentNode.removeChild(s); } catch (e) {} }
+    }
     function loadScript(src) {
       return new Promise(function (res, rej) {
         const s = document.createElement('script');
         s.src = src;
-        s.onload = function () { res(); };
+        s.onload = function () { res(s); };
         s.onerror = function () { rej(new Error('脚本加载失败: ' + src)); };
+        injectedScripts.add(s);            // 先登记再插入，保证 dispose 一定找得到它
         document.head.appendChild(s);
+        if (disposed) dropInjected(s);     // 极端情况：登记与插入之间就切走了
       });
     }
     function viaLocal() {
       if (window.mermaid) return Promise.resolve(window.mermaid);
-      return loadScript(LOCAL).then(function () {
+      return loadScript(LOCAL).then(function (s) {
+        if (disposed) {
+          dropInjected(s);
+          return Promise.reject(new Error('已离开 Mermaid 页，取消加载'));
+        }
         if (!window.mermaid) throw new Error('本地 mermaid 未就绪');
         return window.mermaid;
       });
@@ -3024,6 +3039,8 @@ registerTool({
         if (i >= order.length) return Promise.reject(lastErr || new Error('Mermaid 加载失败'));
         return order[i]().catch(function (e) { return tryNext(i + 1, e); });
       })(0, null).then(mod => {
+        // 加载完成时若已离开页面，则不持有引用，让旧闭包连同 Mermaid 实例一起被回收
+        if (disposed) { lib = null; return Promise.reject(new Error('已离开 Mermaid 页')); }
         lib = mod;
         lib.initialize(initCfg());
         libErr = null;
@@ -3446,6 +3463,13 @@ registerTool({
       clearInterval(themeWatch);
       closeMenu();
       if (lib) { try { lib.initialize({ startOnLoad: false, securityLevel: 'strict' }); } catch (e) {} }
+      // 释放 Mermaid：进过一次 Mermaid 页会常驻 60~100 MB，离开时必须清掉，否则直到关应用都占着
+      lib = null;
+      loading = null;
+      libErr = null;
+      try { window.mermaid = null; } catch (e) {}
+      injectedScripts.forEach(dropInjected);
+      injectedScripts.clear();
     };
   }
 });

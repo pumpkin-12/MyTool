@@ -61,13 +61,13 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 - `index.html` 现为 217 KB / 4848 行（四个工具）
 - NSIS 工具链缓存：`%LOCALAPPDATA%\tauri\NSIS`（首次 build 时联网下载，之后离线可用，**勿删**）
 
-## 磁盘占用基准（2026-09-14 实测）
-- 项目总 **8 603 MB / 10 736 文件**，`src-tauri/target/` 独占 **8 595.8 MB（99.7%）**：
-  `debug` 6 490 MB（incremental 966 / deps 3 624 / build 731 / toolbox.pdb 109.9）、`release` 2 105 MB（deps 1 737 / build 358）
-- **非 target 全部文件仅 49 个 / 约 8.1 MB** —— 瘦身源码毫无意义
-- **`target/` 可随时全清**，唯一要保留的是 `release/toolbox.exe`（4.2 MB）+ `release/bundle/nsis/*.exe`（2.2 MB）
-- 清理命令：`cargo clean --profile dev` 清 debug；release 手工删 `deps/ build/ .fingerprint/ *.pdb *.lib *.rlib *.d`
-- 待清理：`%APPDATA%\com.lijiazhen.toolbox`（旧数据目录 0.26 MB，最后写入 9/11，已确认废弃）
+## 磁盘占用基准（2026-09-14 实测 + 已执行清理）
+- **清理前**：项目总 8 603 MB / 10 736 文件，`src-tauri/target/` 独占 8 595.8 MB（99.7%）。
+- **已实际执行清理（2026-09-14）**：`cargo clean --profile dev` 删 debug（回收 6.3 GiB / 5 309 文件）+ 手工删 release 的 `deps/ build/ .fingerprint/ 各类中间文件`。
+  - **清理后项目约 15 MB / 835 文件**；`target/` 现约 **7.4 MB**（仅留 `release/toolbox.exe` 4.2 MB + `release/bundle/nsis/*.exe` 2.2 MB + 少量 `release/.fingerprint/` 缓存，用户拒绝删 fingerprint，且留着无害）。
+  - C 盘旧数据目录 `%APPDATA%\com.lijiazhen.toolbox` 已**归档到 `data/_archive/legacy-C盘-2026-09-11-bak0~3` 后删除**（C 盘可用 103.6 → 111.3 GB）。
+  - 改动已提交 `d0cf8e2`。
+- **代价**：下次 `tauri dev` 冷编译约 3~5 分钟、`tauri build` 全量重编更久（缓存已清，需重建）。**用户已知晓并确认"保持现状，不额外把 target 挪到项目外"。**
 - `.cargo\registry` 1 351 MB 是**全局共享**的依赖缓存，不属本项目
 - 详细方案见 `docs/内容占用优化方案.md`
 
@@ -90,7 +90,7 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 - 存档按 key 拆分，避免每次全量 stringify（`quiz:questions` 已占存档 88%，画板改一下也要重写这 160 KB）
 - 自动更新 / 托盘 / 开机自启
 - 清理 `index.html` 顶部 6 处 `data-page-node-id` 残留
-- 清理 `target/`（回收 8.6 GB，见「磁盘占用基准」）
+- ~~清理 `target/`（回收 8.6 GB）~~ **已于 2026-09-14 执行，见「磁盘占用基准」**
 - 归档 `docs/*.html` 两份旧格式方案（今后方案一律 `.md`）
 
 ## 迁移前的历史数据
