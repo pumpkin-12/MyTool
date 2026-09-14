@@ -90,10 +90,28 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 - ~~**mermaid 改为按需加载 + 离开释放**~~ **已于 2026-09-14 完成**（commit `dcc8d4a`，见「运行期占用基准」）
 - **画板图片外置为文件**（现在 base64 内联进 `shapes`，存档随图片膨胀；`sketch:shapes` 目前仅 0.2 KB，**插图片前必须做**：落 `data/assets/<sha1>.<ext>`，`shapes` 只存引用）
 - 存档按 key 拆分，避免每次全量 stringify（`quiz:questions` 已占存档 88%，画板改一下也要重写这 160 KB）
+- **系统状态模块**（方案已完成，见上节；等用户拍板后实施）
 - 自动更新 / 托盘 / 开机自启
 - 清理 `index.html` 顶部 6 处 `data-page-node-id` 残留
 - ~~清理 `target/`（回收 8.6 GB）~~ **已于 2026-09-14 执行，见「磁盘占用基准」**
 - 归档 `docs/*.html` 两份旧格式方案（今后方案一律 `.md`）
+
+## 计划中的「系统状态模块」（方案已出，未实施）
+详细方案 **`docs/系统状态模块方案.md`**（617 行）。核心调研结论：
+
+- 🔴 **`windows-sys` 不能直接 `use`**：`0.61.2` 只在 `Cargo.lock`（传递依赖），**`Cargo.toml` 未声明** → 必须先加
+  `[target.'cfg(windows)'.dependencies] windows-sys = { version = "0.61", features = [...] }`。
+  准确说法是**零新增下载 + crate 需编一次**（小、无 proc-macro），不是"零依赖"。
+- **不要用 `sysinfo` crate**（它和 `ntapi` 都未缓存）。
+- **值得加的 API**：`GetPerformanceInfo`（`System::ProcessStatus`/`psapi.dll`，一次给 **ProcessCount/ThreadCount/SystemCache/Commit/内核内存**）、
+  `GetNativeSystemInfo`（核数，**替换繁琐的 `GetLogicalProcessorInformationEx`**）、注册表 `ProcessorNameString`（CPU 型号名）、
+  `GetPhysicallyInstalledSystemMemory`、`GetDriveTypeW`（常量在 `System::WindowsProgramming`）、`SHQueryRecycleBinW`。
+- ⚠️ **`GetSystemTimes` 在 `System::Threading`**（不是 SystemInformation），收 `*mut FILETIME`。**`kernel` 已含 idle**，总时间 = `(kernel-pk)+(user-pu)`。
+- ❌ **WMI 在 windows-sys 不可用**（`System::Wmi` 只有 `MI_Application_InitializeV1`，无 COM 接口）。
+- ❌ **`EmptyWorkingSet` 不用**：只是把内存挪到页文件，实际变慢（236 MB 是 WebView2 固定门票）。
+- Tauri 侧实用点：`app.path().app_local_data_dir().join("EBWebView")` 可拿 WebView2 缓存目录，不必手拼 `%LOCALAPPDATA%`。
+- **定时器是本模块最大风险**（已因 mermaid 吃过亏）：`dispose` 必须 `clearInterval` + 解绑 `visibilitychange` + 异步回调查 `alive`。
+- **待用户拍板 4 项**：①入口形态（建议设置面板而非第 5 卡片）②做到第几档 ③要不要系统 CPU% ④要不要诊断报告导出。
 
 ## 迁移前的历史数据
 `实习日志备份-2026-09-11.json`（项目根，4 条日志）—— 已导入桌面版。浏览器版 → 桌面版靠首页「导入全部数据」。
