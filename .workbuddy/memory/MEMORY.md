@@ -90,7 +90,7 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 - ~~**mermaid 改为按需加载 + 离开释放**~~ **已于 2026-09-14 完成**（commit `dcc8d4a`，见「运行期占用基准」）
 - **画板图片外置为文件**（现在 base64 内联进 `shapes`，存档随图片膨胀；`sketch:shapes` 目前仅 0.2 KB，**插图片前必须做**：落 `data/assets/<sha1>.<ext>`，`shapes` 只存引用）
 - 存档按 key 拆分，避免每次全量 stringify（`quiz:questions` 已占存档 88%，画板改一下也要重写这 160 KB）
-- **系统状态模块**（方案已完成，见上节；等用户拍板后实施）
+- ~~**系统状态模块第一档**~~ **已于 2026-09-14 完成**（commit `cc2dfd9`）；第二/三档待做
 - 自动更新 / 托盘 / 开机自启
 - 清理 `index.html` 顶部 6 处 `data-page-node-id` 残留
 - ~~清理 `target/`（回收 8.6 GB）~~ **已于 2026-09-14 执行，见「磁盘占用基准」**
@@ -112,6 +112,41 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 - Tauri 侧实用点：`app.path().app_local_data_dir().join("EBWebView")` 可拿 WebView2 缓存目录，不必手拼 `%LOCALAPPDATA%`。
 - **定时器是本模块最大风险**（已因 mermaid 吃过亏）：`dispose` 必须 `clearInterval` + 解绑 `visibilitychange` + 异步回调查 `alive`。
 - **待用户拍板 4 项**：①入口形态（建议设置面板而非第 5 卡片）②做到第几档 ③要不要系统 CPU% ④要不要诊断报告导出。
+
+## 「系统状态模块」第一档已实施（2026-09-14，commit `cc2dfd9`）
+详细方案+实施记录 **`docs/系统状态模块方案.md`**（620+ 行）。
+
+### 代码资产
+- `src-tauri/Cargo.toml`：`[target.'cfg(windows)'.dependencies] windows-sys = "0.61"`，**仅 5 个 feature**。
+  🔴 这个包本来只在 `Cargo.lock`（传递依赖），**不显式声明就不能 `use`**。
+- `src-tauri/src/lib.rs`（521 行）：`CpuSample` state + 三条 **只读**命令
+  - `sysinfo(cpu_state, data_dir)` → JSON：本进程内存、系统内存/提交/内核/系统缓存、
+    进程/线程/句柄数、CPU 核数+架构+型号名+占用率、开机时长、磁盘容量
+  - `dir_usage(path)` → `{bytes, files, exists}`，显式栈迭代、async
+  - `store_stats()` → `store.json` 与 `.1/.2/.3` 各自体积（**这三份备份前端看不到**，是隐性开销）
+- `web/index.html`：首页 `data-bar` 的「系统状态」按钮 + 模态框（应用/系统/磁盘/存档四组）
+
+### 关键实现要点（改动前必读）
+- 🔴 **`GetSystemTimes` 在 `System::Threading`**（不是 SystemInformation），收 `*mut FILETIME`。
+  **kernel 已含 idle**，总时间 = `(kernel-pk)+(user-pu)`，**别再单独加 idle**。
+  首次采样无基准 → 返回 `-1`，前端显示「测量中」而非假的 0%。
+- 🔴 **`RegQueryValueExW` 返回 LSTATUS（i32，0=成功），不是 BOOL** —— 别再拿 `!= 0` 当成功。
+  `cpu_brand()` 用固定 `[0u16; 256]` 缓冲 + 无论成败都 `RegCloseKey`，手工声明 advapi32 符号
+  （**不引 `Win32_System_Registry` feature**）。
+- `si.Anonymous.Anonymous.wProcessorArchitecture` —— `SYSTEM_INFO` 第一字段是**两层匿名 union**。
+- **`resize`/`insert` 陷阱**：`serde_json::Map::insert` 返回 `Option<Value>`，
+  别写成 `match { Some=>insert, None=>insert }`（E0308，两支类型不一致）。用 `unwrap_or(-1.0)` 展开。
+- **定时器纪律**（本项目已因 mermaid 吃过亏）：`dispose` 必须 ①`alive=false` 阻断回调 ②清 interval
+  ③解绑 `visibilitychange`。**且 `render()` 路由切换时也要收面板** —— 否则 `uiOverlay` 关掉遮罩后定时器还在跑。
+
+### 验证
+- `tools/verify-sysinfo.js` **82 项**（A 段静态查 lib.rs/Cargo.toml，B 段 vm 里真跑面板，含 10 次开关不泄漏）
+- 回归基线：`verify-appstore` 35 / `verify-quizcore` 87 / `verify-mermaid-release` 23
+- **写测试的坑**：vm 里顶层 `let` 不落到 sandbox 对象（只有 `function`/`var` 会）→
+  必须再 `runInContext` 一小段把探针挂到 `globalThis` 才能操作模块级 `let`
+
+### 未做
+第二档（构建缓存/WebView2 缓存/运行期进程对照）、第三档（打开目录、清理操作）、阈值告警、内存基线对比。
 
 ## 迁移前的历史数据
 `实习日志备份-2026-09-11.json`（项目根，4 条日志）—— 已导入桌面版。浏览器版 → 桌面版靠首页「导入全部数据」。
