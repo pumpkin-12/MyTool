@@ -21,6 +21,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 
+# 系统状态模块用到的 Win32 API。这个包本来就作为传递依赖躺在 Cargo.lock 里，
+# 显式声明只是为了能在代码里 `use` 它 —— 不会产生新的下载（只需编一次，无 proc-macro）。
+# 只勾选实际用到的 feature，其余 217 个 Win32_* 都不参与编译。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }
+
 [profile.release]
 codegen-units = 1
 lto = true
