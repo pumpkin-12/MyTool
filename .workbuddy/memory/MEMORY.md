@@ -76,7 +76,9 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 - **WebView2 固定开销 236 MB**（浏览器主进程 124.4 + gpu 63.0 + network 32.9 + storage 20.5 + crashpad 16.1）—— **这是每个 WebView2 应用的门票，不可优化，进程数也降不下来**。
 - Rust 宿主只有 **27.4 MB**（私有 7.3 MB）—— 已经很轻，无需动。
 - renderer 69.2 MB 是唯一可影响的；**其中大头是 mermaid**。
-- ✏️ **待修：mermaid 常驻内存**（`index.html:3439` 进页即 `loadLib()`，`dispose()` 不释放 `lib`）→ 进过一次 Mermaid 页就常驻 60~100 MB。修法：按需加载 + `dispose` 里 `lib = null` 并移除注入的 `<script>`。**不裁剪包体**（那要打包器）。
+- ✅ **mermaid 常驻内存已修**（2026-09-14，commit `dcc8d4a`）：`loadScript` 改为**注入前先登记**到 `injectedScripts` 集合，`dispose()` 里 `lib = null` + 清 `window.mermaid` + 移除全部注入的 `<script>`；`viaLocal`/`loadLib` 在 dispose 后完成加载则不持有引用。**未裁剪包体**（那要打包器）。
+  - 踩到的坑：最初把登记放在 `onload` 之后 → **"加载中就切走"时 script 永久残留 head**，是真实缺陷，被专项测试抓出。
+  - 专项测试：`tools/verify-mermaid-release.js`（23 项，覆盖 dispose 释放 / 切走再切回 / 加载中切走）
 - WebView2 数据目录 `%LOCALAPPDATA%\com.lijiazhen.toolbox\EBWebView` = 38 MB，**在 C 盘，与 D 盘 store.json 无关**（已确认不含 store.json）；其中 16.1 MB（Subresource Filter / Speech Recognition / BrowserMetrics）对本应用零价值。
 - 特性开关：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 必须在 `run()` 里 WebView2 初始化**之前** `set_var`。
 - 系统内存：总 15.7 GB，属实偏紧（已用 74%）。
@@ -84,8 +86,8 @@ release profile 开了 `lto = true` + `codegen-units = 1`，编译慢，只在�
 ## dev 与 release 共用数据目录
 `tauri dev` 和装好的应用读同一个 **`D:\Ai-file\MyTool\data\store.json`**（现由 `DATA_DIR` 硬编码决定，不再依赖 identifier），所以调试时的数据在正式版里直接可见。
 
-## 待办（第 2 档，均未开始）
-- **mermaid 改为按需加载 + 离开释放**（运行期最大收益，预计省 60~100 MB；只动 `index.html` 的 `loadLib` / `dispose`，约 20 行）
+## 待办（第 2 档）
+- ~~**mermaid 改为按需加载 + 离开释放**~~ **已于 2026-09-14 完成**（commit `dcc8d4a`，见「运行期占用基准」）
 - **画板图片外置为文件**（现在 base64 内联进 `shapes`，存档随图片膨胀；`sketch:shapes` 目前仅 0.2 KB，**插图片前必须做**：落 `data/assets/<sha1>.<ext>`，`shapes` 只存引用）
 - 存档按 key 拆分，避免每次全量 stringify（`quiz:questions` 已占存档 88%，画板改一下也要重写这 160 KB）
 - 自动更新 / 托盘 / 开机自启
