@@ -259,13 +259,9 @@ fn rotate_backups(path: &std::path::Path, gate: &BackupGate) {
 }
 
 /// 启动时读全量存档（仅用于导入导出与兼容）。
-/// 顺带把旧的全量存档迁移成分键存储。
 #[tauri::command]
 fn store_read(app: AppHandle) -> Result<String, String> {
     migrate_legacy(&app)?;
-    // 旧格式 → 分键格式。失败不阻断启动：分键读取会各自回落为空，
-    // 而旧文件仍在，用户可以手工排查。
-    let _ = migrate_to_keys();
     let path = store_path()?;
     match fs::read_to_string(&path) {
         Ok(s) => Ok(s),
@@ -318,8 +314,13 @@ fn store_read_key(key: String) -> Result<String, String> {
 ///
 /// 键名存在文件内容里（格式：`{"k":"toolbox:quiz:questions","v":<原值>}`），
 /// 这样即使哈希算法变了也还能还原出原始键名。
+///
+/// 🔴 迁移必须挂在这里：前端启动走的是 store_keys + store_read_all，
+/// **不调 store_read**，把迁移只挂在 store_read 上等于永远不会执行。
 #[tauri::command]
 fn store_read_all() -> Result<String, String> {
+    // 旧格式 → 分键格式。失败不阻断启动：旧文件仍在，用户可手工排查。
+    let _ = migrate_to_keys();
     let dir = keys_dir()?;
     let mut out = serde_json::Map::new();
     if let Ok(rd) = fs::read_dir(&dir) {
@@ -378,6 +379,8 @@ fn store_del_key(key: String) -> Result<bool, String> {
 /// 文件名是哈希值，对用户没意义，所以从文件内容里读出原始键名。
 #[tauri::command]
 fn store_keys() -> Result<String, String> {
+    // 启动时的第一个命令，顺手确保迁移已跑（幂等，重复调用无副作用）
+    let _ = migrate_to_keys();
     let dir = keys_dir()?;
     let mut items: Vec<serde_json::Value> = Vec::new();
     if let Ok(rd) = fs::read_dir(&dir) {

@@ -5,6 +5,7 @@
 // 用法: node _verify.js <index.html> <报告输出路径>
 const fs = require('fs');
 const vm = require('vm');
+const path = require('path');
 
 const HTML = process.argv[2];
 const REPORT = process.argv[3];
@@ -297,6 +298,45 @@ ok(AN.isNative === true, 'isNative 在 Tauri 下为 true');
   const A4 = s4.__AS;
   await A4.ready;
   ok(await A4.assetGet('missing.png') === null, 'assetGet 读不到时返回 null（缺图不阻断渲染）');
+
+  // ===== 迁移可达性（静态检查 Rust 侧） =====
+  // 背景：migrate_to_keys() 最初只挂在 store_read 上，但前端启动走的是
+  // store_keys + store_read_all，**从不调 store_read** → 迁移永远不会执行，
+  // 表现为 data/keys/ 是空目录、老 store.json 里的数据搬不过去。
+  // 这类「函数写了但挂在不可达路径上」的 bug 静态断言能抓住。
+  log('');
+  log('--- [迁移可达性] ---');
+  const LIB = path.join(path.dirname(HTML), '..', 'src-tauri', 'src', 'lib.rs');
+  let libSrc = null;
+  let libErr = '';
+  try { libSrc = fs.readFileSync(LIB, 'utf8'); } catch (e) { libErr = String(e); }
+  if (!libSrc) {
+    ok(false, '能读到 src-tauri/src/lib.rs（迁移可达性检查的前提）', libErr);
+  } else {
+    ok(/fn\s+migrate_to_keys/.test(libSrc), 'lib.rs 里有 migrate_to_keys 定义');
+
+    // 取每个命令函数体，看迁移调用落在哪个函数里
+    const fnBody = (name) => {
+      const i = libSrc.indexOf('fn ' + name + '(');
+      if (i < 0) return '';
+      // 从函数起点往后扫，按花括号配平截出函数体
+      let d = 0, started = false;
+      for (let j = i; j < libSrc.length; j++) {
+        if (libSrc[j] === '{') { d++; started = true; }
+        else if (libSrc[j] === '}') { d--; if (started && d === 0) return libSrc.slice(i, j + 1); }
+      }
+      return libSrc.slice(i);
+    };
+
+    const inReadAll = /migrate_to_keys\s*\(/.test(fnBody('store_read_all'));
+    const inKeys = /migrate_to_keys\s*\(/.test(fnBody('store_keys'));
+    ok(inReadAll || inKeys,
+      '迁移挂在启动路径上（store_keys 或 store_read_all 至少一个调用它）');
+
+    // 前端启动确实调了这两个之一 —— 与上面的断言配对，防止「迁移改了但这俩也没人调」
+    ok(/invoke\(\s*['"]store_read_all['"]/.test(html) || /invoke\(\s*['"]store_keys['"]/.test(html),
+      '前端启动确实 invoke 了 store_keys / store_read_all');
+  }
 
   log('');
   log('===== 结果: ' + pass + ' passed, ' + fail + ' failed =====');
