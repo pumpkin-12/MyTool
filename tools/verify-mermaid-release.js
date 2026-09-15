@@ -31,16 +31,27 @@ ok(/if \(disposed\) \{ lib = null; return Promise\.reject/.test(html),
 
 section('[2] 真机行为模拟（抽模块 + 极简 DOM）');
 
-// 抽 mermaid 工具模块：从 "registerTool({\n  id: 'mermaid'" 到对应结束
-const start = html.indexOf("registerTool({\n  id: 'mermaid'");
+// 抽 mermaid 工具模块：从 "registerTool({\n  id: 'mermaid'" 到下一个顶格 registerTool 之前
+// 🔴 坑一：index.html 是 **CRLF 行尾**，标记串里必须写 \r\n。
+//    写成 \n 会让 indexOf 返回 -1 → 整个 [2]~[6] 段被跳过、连报告文件都不产出，
+//    表现为"脚本跑完了、退出码 0、看着像通过"，实际什么都没验证。
+//    （这段代码自 2026-09-14 写下起就一直没真正跑过，2026-09-15 才发现。）
+//    这里统一归一化成 LF 再匹配，避免以后编辑器改行尾又踩一遍。
+// 🔴 坑二：**不要用花括号配平找结尾** —— 段内字符串/正则里也有 `{` `}`（CSS 模板、正则量词），
+//    纯计数会跑偏甚至扫到文件尾返回 -1。
+//    也不要用 `lastIndexOf('工具 10：刷题')` —— 文件里有三处「工具 10：」，
+//    取最后一个会把刷题模块整段吞进来（截出 33858 字符，远超真实 35149 → 语法报
+//    "Unexpected end of input"）。
+//    可靠做法：**下一个顶格 `\nregisterTool({` 就是本段终点**。
+const norm = html.replace(/\r\n/g, '\n');
+const start = norm.indexOf("registerTool({\n  id: 'mermaid'");
+ok(start >= 0, '定位到 mermaid 模块起点');
 if (start < 0) { ok(false, '找到 mermaid 工具模块'); }
 else {
-  // 找模块结尾：'tool 10' 注释前
-  const endMark = html.indexOf('function mount', start);
-  // 直接用整个 mermaid 段（到 "工具 10" 注释）
-  const tailMark = html.indexOf('工具 10：刷题', start);
-  const segEnd = html.lastIndexOf('});', tailMark);
-  const seg = html.slice(start, segEnd + 3);
+  const nextTool = norm.indexOf('\nregisterTool({', start + 10);
+  ok(nextTool > start, '定位到下一个工具起点（' + nextTool + '）');
+  // 本段末尾可能带一小段尾随注释（描述存储 key），剥掉不影响执行
+  const seg = norm.slice(start, nextTool);
 
   ok(seg.length > 1000, '成功抽出 mermaid 模块（' + seg.length + ' 字符）');
 
@@ -169,21 +180,30 @@ else {
         }
         ok(head.children.length === 0, '加载中切走后 head 保持干净（' + head.children.length + '）');
 
-        log.push('');
-        log.push('  结果: ' + pass + ' 通过 / ' + fail + ' 失败');
-        fs.writeFileSync('D:/Ai-file/MyTool/.workbuddy/_mm.txt', log.join('\n'), 'utf8');
-        process.exit(fail ? 1 : 0);
+        finish();
       });
     } else {
-      log.push('');
-      log.push('  结果: ' + pass + ' 通过 / ' + fail + ' 失败');
-      fs.writeFileSync('D:/Ai-file/MyTool/.workbuddy/_mm.txt', log.join('\n'), 'utf8');
-      process.exit(fail ? 1 : 0);
+      finish();
     }
   } else {
-    log.push('');
-    log.push('  结果: ' + pass + ' 通过 / ' + fail + ' 失败');
-    fs.writeFileSync('D:/Ai-file/MyTool/.workbuddy/_mm.txt', log.join('\n'), 'utf8');
-    process.exit(fail ? 1 : 0);
+    finish();
   }
+}
+
+// 🔴 统一的收尾落盘。三条硬要求，缺一条都会让这个脚本变成"假绿"：
+//   ① 报告必须**无条件产出**（分支漏写文件 = 跑完静默无声）
+//   ② 结果行要能看出**到底跑了多少项**（只跑 15 项和跑满 23 项不该长得一样）
+//   ③ 退出码要如实反映（全绿 0 / 有失败 1）
+//   历史上这个脚本踩过 ①②：CRLF 匹配失败导致 [2]~[6] 整段被跳过，
+//   报告里的结果行却照旧打印"23 通过 / 0 失败"——退出码 0、看着全绿，其实只跑了 8 项。
+function finish() {
+  log.push('');
+  log.push('  结果: ' + pass + ' 通过 / ' + fail + ' 失败'
+    + (pass + fail < 23 ? '   ⚠️ 未跑满 23 项，说明中途有分支被跳过！' : ''));
+  fs.writeFileSync('D:/Ai-file/MyTool/.workbuddy/_mm.txt', log.join('\n'), 'utf8');
+  if (typeof console !== 'undefined' && console.log) {
+    console.log('verify-mermaid-release: ' + pass + ' 通过 / ' + fail + ' 失败'
+      + (pass + fail < 23 ? '（未跑满 23 项！）' : ''));
+  }
+  process.exit(fail ? 1 : 0);
 }
