@@ -373,6 +373,17 @@
  *   - 浏览器  ：localStorage
  * 桌面端是异步文件读写：界面初始化必须等 AppStore.ready 之后。
  * ============================================================ */
+/* ============================================================
+ * AppStore：唯一的存储入口。三后端自动探测，接口签名一致，
+ * 工具代码不感知运行环境。键前缀统一 toolbox:<tool>:<field>。
+ *
+ * 桌面端采用「分键存储」：每个键一个文件，改一个键只重写该键。
+ * 早期版本把全部键塞进一个 store.json，画板改一下就要把整个
+ * 题库（约 160 KB）重新 stringify + 写盘，纯属浪费。
+ *
+ * 内存里仍保留一份完整副本（mem）—— get() 是同步接口，
+ * 不能每读一次都走一次 IPC。
+ * ============================================================ */
 const AppStore = (function () {
   const PREFIX = 'toolbox:';
   const K = k => PREFIX + k;
@@ -384,6 +395,7 @@ const AppStore = (function () {
   function clone(v) {
     try { return JSON.parse(JSON.stringify(v)); } catch (e) { return v; }
   }
+
   // 写盘串行化 + 失败可见。
   // 原来每次 set 都直接 invoke 一次，而多个 invoke 的完成顺序没有保证，
   // 快速连续保存时存在「后写覆盖先写」的竞态；串成一条 Promise 链即可消除。
@@ -392,12 +404,41 @@ const AppStore = (function () {
   let writeOk = true;
   let writeErr = null;
 
-  function persist() {
+  /* 待写盘的键（分键模式下只需重写这些）。
+   * 只有在真正轮到这一批写盘时才结算 dirty 集合 —— 若在 persist() 里
+   * 立刻结算，连续 3 次 set 会各自成一个批次、写 3 次盘；推迟到链上执行时
+   * 再取，就能把这 3 次合并成 1 次。 */
+  let dirty = new Set();
+  let queued = false;
+
+  function persist(keys) {
     if (!T && !E) return;
-    const payload = JSON.stringify(mem || {});
-    const run = T
-      ? () => T.invoke('store_write', { data: payload })
-      : () => Promise.resolve(E.writeAll(mem || {}));
+    if (keys) {
+      for (let i = 0; i < keys.length; i++) dirty.add(keys[i]);
+    } else {
+      // 全量模式（导入数据）：所有键都算脏
+      for (const k in (mem || {})) dirty.add(k);
+    }
+    if (queued) return;   // 已排队，交给那一批一起结算
+    queued = true;
+
+    const run = () => {
+      queued = false;
+      const batch = Array.from(dirty);
+      dirty = new Set();
+      if (!batch.length) return undefined;
+
+      // 桌面端：逐键写自己的文件。浏览器/Electron 无分键能力，退化为全量写。
+      if (T) {
+        return Promise.all(batch.map(k => {
+          const v = (mem || {})[k];
+          if (v === undefined) return T.invoke('store_del_key', { key: k });
+          return T.invoke('store_write_key', { key: k, data: JSON.stringify(v) });
+        }));
+      }
+      return Promise.resolve(E.writeAll(mem || {}));
+    };
+
     writeChain = writeChain.then(run).then(
       () => { writeOk = true; writeErr = null; },
       (e) => {
@@ -408,10 +449,15 @@ const AppStore = (function () {
     );
   }
 
-  // 启动时一次性把全部数据读进内存；失败也不能让界面卡死
+  // 启动时逐键把数据读进内存；失败也不能让界面卡死
   let ready = Promise.resolve();
   if (T) {
-    ready = T.invoke('store_read').then(function (s) {
+    ready = T.invoke('store_keys').then(function (s) {
+      /* store_keys 只返回文件名与体积，拿不到键名（键被哈希了）。
+       * 所以这里仍需一次全量读取来建立内存副本 —— 但只发生一次，
+       * 且迁移后 store.json 已归档，走的是分键目录逐文件读。 */
+      return T.invoke('store_read_all');
+    }).then(function (s) {
       try { mem = JSON.parse(s || '{}'); } catch (e) { mem = {}; }
       if (!mem || typeof mem !== 'object') mem = {};
     }).catch(function () { mem = {}; });
@@ -442,7 +488,7 @@ const AppStore = (function () {
       if (native) {
         if (!mem) mem = {};
         mem[K(key)] = clone(value);
-        persist();
+        persist([K(key)]);   // 只重写这一个键
         // 写盘是异步的，所以这里返回的是「上一次」写盘的结果：
         // 一次失败会在下一次保存时被工具感知到（例如画板的大体积告警），
         // 同时上面 persist() 里的 toast 会立刻提示，不会静默。
@@ -455,7 +501,7 @@ const AppStore = (function () {
     },
     remove(key) {
       if (native) {
-        if (mem) { delete mem[K(key)]; persist(); }
+        if (mem) { delete mem[K(key)]; persist([K(key)]); }
         return;
       }
       try { localStorage.removeItem(K(key)); } catch (e) {}
@@ -484,19 +530,19 @@ const AppStore = (function () {
      * 逐个 set 会把「全量 stringify + 全量写盘」重复 N 倍。 */
     setMany(obj) {
       if (!obj || typeof obj !== 'object') return false;
-      let n = 0;
+      const touched = [];
       for (const k in obj) {
         if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
         if (native) {
           if (!mem) mem = {};
           mem[K(k)] = clone(obj[k]);
+          touched.push(K(k));
         } else {
           try { localStorage.setItem(K(k), JSON.stringify(obj[k])); }
           catch (e) { return false; }
         }
-        n++;
       }
-      if (native && n) persist();
+      if (native && touched.length) persist(touched);
       return true;
     },
     importAll(obj) {
@@ -504,10 +550,15 @@ const AppStore = (function () {
       let n = 0;
       if (native) {
         if (!mem) mem = {};
+        const touched = [];
         for (const k in obj) {
-          if (Object.prototype.hasOwnProperty.call(obj, k)) { mem[k] = clone(obj[k]); n++; }
+          if (Object.prototype.hasOwnProperty.call(obj, k)) {
+            mem[k] = clone(obj[k]);
+            touched.push(k);
+            n++;
+          }
         }
-        if (n) persist();
+        if (n) persist(touched);
         return n;
       }
       try {
@@ -518,6 +569,42 @@ const AppStore = (function () {
         }
       } catch (e) {}
       return n;
+    },
+
+    /* ---------- 图片资产（画板专用） ----------
+     * 桌面端把图片落到 data/assets/，浏览器端没有文件系统，
+     * 退化为把 dataURL 直接存进 localStorage 的一个键。 */
+
+    /* 存一张图，返回资产名（桌面端是 <sha1>.<ext>，浏览器端是内联键名）。
+     * dataUrl 形如 "data:image/png;base64,xxxx"。 */
+    assetPut(dataUrl) {
+      const m = /^data:([^;,]+);base64,(.*)$/.exec(String(dataUrl || ''));
+      if (!m) return Promise.reject(new Error('不是合法的 data URL'));
+      const mime = m[1], b64 = m[2];
+      const ext = (mime.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
+      if (T) return T.invoke('asset_put', { dataBase64: b64, ext: ext });
+      // 浏览器兜底：存进 localStorage，键名用内容哈希避免重复
+      try {
+        const name = 'inline-' + hashStr(b64) + '.' + ext;
+        localStorage.setItem('toolbox:asset:' + name, dataUrl);
+        return Promise.resolve(name);
+      } catch (e) { return Promise.reject(e); }
+    },
+
+    /* 取回资产的 data URL。取不到返回 null（不抛错，渲染路径要能容忍）。 */
+    assetGet(name) {
+      if (!name) return Promise.resolve(null);
+      if (T) return T.invoke('asset_get', { name: name }).catch(() => null);
+      try { return Promise.resolve(localStorage.getItem('toolbox:asset:' + name)); }
+      catch (e) { return Promise.resolve(null); }
+    },
+
+    /* 删除资产。用于形状被删除后回收文件。 */
+    assetDel(name) {
+      if (!name) return Promise.resolve(false);
+      if (T) return T.invoke('asset_del', { name: name }).catch(() => false);
+      try { localStorage.removeItem('toolbox:asset:' + name); return Promise.resolve(true); }
+      catch (e) { return Promise.resolve(false); }
     }
   };
 })();
@@ -537,6 +624,16 @@ function randInt(max) {
   const arr = new Uint32Array(1);
   crypto.getRandomValues(arr);
   return arr[0] % max;
+}
+/* 字符串短哈希（FNV-1a 变体），用于浏览器端的资产键名。
+ * 不追求抗碰撞，只求同一个内容稳定得到同一个名字、避免重复存储。 */
+function hashStr(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
 }
 function todayKey() {
   const d = new Date();
@@ -706,6 +803,7 @@ function openSysinfo() {
       const archive = await storeStatsSafe(T);
       const raw = await T.invoke('sysinfo', { dataDir: (archive && archive.dir) || '' });
       if (!alive) return;
+      __keyStats = (archive && archive.keys) ? archive.keys : null;
       latest = { sys: JSON.parse(raw), archive: archive };
       body.innerHTML = renderSysinfo(latest.sys, latest.archive);
       stamp.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -750,14 +848,22 @@ function openSysinfo() {
   };
 }
 
-/* 存档明细：直接复用 AppStore.exportAll()，各键体积在前端算 */
+/* 存档明细：优先用磁盘实测（store_keys 按文件内容报原始键名），
+ * 拿不到（浏览器端 / 命令失败）再退回前端 exportAll() 估算。 */
+let __keyStats = null;   // store_stats 里的 keys 段，供 archiveHtml 复用
 function archiveHtml() {
-  const all = AppStore.exportAll() || {};
-  const rows = Object.keys(all).map(k => {
-    let size = 0;
-    try { size = new Blob([JSON.stringify(all[k])]).size; } catch (e) { size = 0; }
-    return { key: k, size: size };
-  }).sort((a, b) => b.size - a.size);
+  let rows;
+  if (__keyStats && __keyStats.items && __keyStats.items.length) {
+    rows = __keyStats.items.map(it => ({ key: it.key, size: it.size }));
+  } else {
+    const all = AppStore.exportAll() || {};
+    rows = Object.keys(all).map(k => {
+      let size = 0;
+      try { size = new Blob([JSON.stringify(all[k])]).size; } catch (e) { size = 0; }
+      return { key: k, size: size };
+    });
+  }
+  rows = rows.slice().sort((a, b) => b.size - a.size);
   const total = rows.reduce((s, r) => s + r.size, 0);
   if (!rows.length) return '<div class="hint">暂无数据</div>';
   const top = rows.slice(0, 6);
@@ -842,9 +948,21 @@ function renderSysinfo(s, archive) {
   out.push(sysSection('存档'));
   if (archive && archive.items) {
     out.push(sysRow('数据位置', archive.dir || '—'));
-    archive.items.forEach(it => {
-      if (it.exists) out.push(sysRow(it.name, fmtBytes(it.bytes)));
-    });
+    out.push(sysRow('旧存档 store.json', archive.items.some(i => i.name === 'store.json' && i.exists)
+      ? '仍存在（下次写入后归档）' : '已拆分，见下'));
+    // 新布局：分键目录 + 图片资产
+    if (archive.keys) {
+      out.push(sysRow('分键存档 keys/', (archive.keys.count || 0) + ' 个键' +
+        (archive.keys.bytes ? ' · ' + fmtBytes(archive.keys.bytes) : '')));
+    }
+    if (archive.assets) {
+      out.push(sysRow('图片资产 assets/', (archive.assets.count || 0) + ' 张' +
+        (archive.assets.bytes ? ' · ' + fmtBytes(archive.assets.bytes) : '')));
+    }
+    if (archive.migrated && archive.migrated.exists) {
+      out.push(sysRow('归档旧文件', 'store.json.migrated-bak · ' + fmtBytes(archive.migrated.bytes) +
+        '（确认无误后可删）'));
+    }
     const backups = archive.items.filter(i => i.name.indexOf('.json.') >= 0 && i.exists);
     out.push(sysRow('轮转备份', backups.length + ' 份' +
       (backups.length ? '（共 ' + fmtBytes(backups.reduce((a, b) => a + b.bytes, 0)) + '）' : '')));
@@ -903,7 +1021,12 @@ function reportText(s, archive) {
   L.push('[存档]');
   if (archive && archive.items) {
     put('目录', archive.dir);
-    archive.items.forEach(i => { if (i.exists) put(i.name, fmtBytes(i.bytes)); });
+    put('旧存档 store.json', archive.items.some(i => i.name === 'store.json' && i.exists) ? '仍存在（下次写入后归档）' : '已拆分');
+    if (archive.keys) put('分键存档 keys/', (archive.keys.count || 0) + ' 个键 · ' + fmtBytes(archive.keys.bytes || 0));
+    if (archive.assets) put('图片资产 assets/', (archive.assets.count || 0) + ' 张 · ' + fmtBytes(archive.assets.bytes || 0));
+    if (archive.migrated && archive.migrated.exists) put('归档旧文件', 'store.json.migrated-bak · ' + fmtBytes(archive.migrated.bytes));
+    const backups = archive.items.filter(i => i.name.indexOf('.json.') >= 0 && i.exists);
+    put('轮转备份', backups.length + ' 份');
   }
   return L.join('\n');
 }
@@ -1693,6 +1816,17 @@ registerTool({
     }
     const editingShape = () => shapes.find(s => s.id === editingId);
     function noteBg(s) { return s.bg || NOTE_COLORS[s.ci % NOTE_COLORS.length]; }
+
+    /* ---------- 图片资产 ----------
+     * 图片不再以 base64 内联进 shapes（一张 2 MB 的图会让存档膨胀十几倍），
+     * 而是落盘到 data/assets/<sha1>.<ext>，shapes 里只存资产名。
+     * 渲染时把资产名换成 data URL，缓存在 assetUrls 里。
+     * 浏览器模式（无 Tauri）没有文件系统，退化为原有的内联 dataURL。 */
+    const assetUrls = new Map();      // 资产名 -> dataURL
+    const assetPending = new Set();   // 正在取回的资产名，防重复请求
+
+    function assetRefOf(s) { return s.asset || ''; }
+    /* 取图片的可用 src：桌面端查缓存，缓存未命中就异步补并触发重绘 */
     function getImg(src) {
       let im = imgCache.get(src);
       if (!im) {
@@ -1702,6 +1836,29 @@ registerTool({
         imgCache.set(src, im);
       }
       return im;
+    }
+    /* 把资产名解析成 data URL。返回 null 表示还没就绪（渲染时跳过该图）。 */
+    function resolveAsset(name) {
+      if (!name) return null;
+      const cached = assetUrls.get(name);
+      if (cached) return cached;
+      if (!assetPending.has(name)) {
+        assetPending.add(name);
+        AppStore.assetGet(name).then(url => {
+          assetPending.delete(name);
+          if (!url) return;
+          assetUrls.set(name, url);
+          imgCache.delete(name);       // 清掉可能存在的失败占位，让下次重建
+          if (mounted) requestRender();
+        }).catch(() => { assetPending.delete(name); });
+      }
+      return null;
+    }
+    /* 画板里每个图片形状的绘制源：桌面端用资产缓存，浏览器端用内联 src */
+    function imgSrcOf(s) {
+      const ref = assetRefOf(s);
+      if (ref) return resolveAsset(ref);
+      return s.src || null;
     }
 
     /* ---------- 绘制 ---------- */
@@ -1785,8 +1942,11 @@ registerTool({
         if (s.fill) { c.fillStyle = s.fill; c.fill(); }
         c.stroke();
       } else if (s.type === 'image') {
-        const im = getImg(s.src);
-        if (im.complete && im.naturalWidth)
+        /* 资产还没取回来时 imgSrcOf 返回 null —— 跳过这一帧，
+         * 取回后会 requestRender 重绘，不会留下空白。 */
+        const src = imgSrcOf(s);
+        const im = src ? getImg(src) : null;
+        if (im && im.complete && im.naturalWidth)
           c.drawImage(im, X(Math.min(s.x, s.x + s.w)), Y(Math.min(s.y, s.y + s.h)), Math.abs(s.w) * k, Math.abs(s.h) * k);
       } else if (s.type === 'text') {
         c.fillStyle = s.color;
@@ -2785,6 +2945,8 @@ registerTool({
     }
     async function exportPNG() {
       commitEditor();
+      if (!shapes.length) { showToast('画布是空的，先画点什么吧'); return; }
+      await ensureAssets();
       const c = renderSceneCanvas();
       if (!c) { showToast('画布是空的，先画点什么吧'); return; }
       const blob = await new Promise(res => c.toBlob(res, 'image/png'));
@@ -2793,6 +2955,8 @@ registerTool({
     }
     async function copyPNG() {
       commitEditor();
+      if (!shapes.length) { showToast('画布是空的，先画点什么吧'); return; }
+      await ensureAssets();
       const c = renderSceneCanvas();
       if (!c) { showToast('画布是空的，先画点什么吧'); return; }
       try {
@@ -2855,14 +3019,36 @@ registerTool({
           if (tspans) parts.push(`<text x="${N1(x + 10)}" y="${N1(y + 10 + fs * 0.85)}" font-family="system-ui, sans-serif" font-size="${N1(fs)}" fill="#4a4534">${tspans}</text>`);
         } else if (s.type === 'image') {
           const x = Math.min(s.x, s.x + s.w), y = Math.min(s.y, s.y + s.h);
-          parts.push(`<image href="${s.src}" x="${N1(x)}" y="${N1(y)}" width="${N1(Math.abs(s.w))}" height="${N1(Math.abs(s.h))}" preserveAspectRatio="none"/>`);
+          /* 用已缓存的 dataURL：genSVG 是同步的，不能在这里等 IO。
+           * 调用方需先 await ensureAssets() 把资产都取回缓存。 */
+          const href = assetRefOf(s) ? (assetUrls.get(assetRefOf(s)) || '') : (s.src || '');
+          if (href) {
+            parts.push(`<image href="${href}" x="${N1(x)}" y="${N1(y)}" width="${N1(Math.abs(s.w))}" height="${N1(Math.abs(s.h))}" preserveAspectRatio="none"/>`);
+          }
         }
       }
       const w = N1(b.w + pad * 2), h = N1(b.h + pad * 2);
       return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${N1(b.x - pad)} ${N1(b.y - pad)} ${w} ${h}" width="${w}" height="${h}"><rect x="${N1(b.x - pad)}" y="${N1(b.y - pad)}" width="${w}" height="${h}" fill="#ffffff"/>${parts.join('')}</svg>`;
     }
+    /* 把所有图片资产预取进缓存。
+     * 导出是同步拼字符串（genSVG / 画布重绘），不能在中途等 IO，
+     * 所以先集中取一遍。已缓存的直接跳过，不重复读盘。 */
+    function ensureAssets() {
+      const need = [];
+      shapes.forEach(s => {
+        if (s.type !== 'image') return;
+        const ref = assetRefOf(s);
+        if (ref && !assetUrls.has(ref)) need.push(ref);
+      });
+      if (!need.length) return Promise.resolve();
+      return Promise.all(need.map(n =>
+        AppStore.assetGet(n).then(url => { if (url) assetUrls.set(n, url); }).catch(() => {})
+      ));
+    }
     async function exportSVG() {
       commitEditor();
+      if (!shapes.length) { showToast('画布是空的，先画点什么吧'); return; }
+      await ensureAssets();
       const svg = genSVG();
       if (!svg) { showToast('画布是空的，先画点什么吧'); return; }
       const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
@@ -2912,7 +3098,9 @@ registerTool({
       r.readAsText(f);
     });
 
-    /* ---------- 插入图片（拖入 / 粘贴） ---------- */
+    /* ---------- 插入图片（拖入 / 粘贴） ----------
+     * 图片落盘为资产文件，shapes 里只存资产名。
+     * 只有浏览器模式（无文件系统）才把 dataURL 内联进 shapes。 */
     function insertImageFile(f, at) {
       if (!f || f.type.indexOf('image/') !== 0) return;
       const r = new FileReader();
@@ -2922,7 +3110,7 @@ registerTool({
           let src = r.result;
           let w = im.naturalWidth || 300, h = im.naturalHeight || 200;
           const MAXPX = 1600;
-          if (Math.max(w, h) > MAXPX) { // 超大图压缩，控制 localStorage 体积
+          if (Math.max(w, h) > MAXPX) { // 超大图先缩，避免单张就吃掉几十 MB
             const sc = MAXPX / Math.max(w, h);
             const c = document.createElement('canvas');
             c.width = Math.round(w * sc);
@@ -2931,20 +3119,40 @@ registerTool({
             src = c.toDataURL(f.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', 0.85);
             w = c.width; h = c.height;
           }
-          pushUndo();
           const dispW = Math.min(w, 380 / view.k); // 屏幕上约 380px 宽
           const s = {
             id: nid(), type: 'image',
             x: at.x - dispW / 2, y: at.y - (dispW * h / w) / 2,
-            w: dispW, h: dispW * h / w,
-            src: src
+            w: dispW, h: dispW * h / w
           };
-          shapes.push(s);
-          selIds = [s.id];
-          setTool('select');
-          requestRender();
-          scheduleSave();
-          showToast('已插入图片（含图片后画板体积会变大）');
+
+          /* 桌面端：先把图存成资产文件，成功后才把形状推进去。
+           * 反过来的话，一旦存盘失败，画板里会留一个永远显示不出来的空图。 */
+          AppStore.assetPut(src).then(name => {
+            if (name) {
+              s.asset = name;
+              assetUrls.set(name, src);   // 立刻可用，不必等下次读回
+            } else {
+              s.src = src;                // 兜底：退化为内联
+            }
+            pushUndo();
+            shapes.push(s);
+            selIds = [s.id];
+            setTool('select');
+            requestRender();
+            scheduleSave();
+            showToast('已插入图片');
+          }).catch(e => {
+            // 落盘失败也不阻断使用：退化为内联，至少这幅图还在
+            s.src = src;
+            pushUndo();
+            shapes.push(s);
+            selIds = [s.id];
+            setTool('select');
+            requestRender();
+            scheduleSave();
+            showToast('图片已插入，但存为文件失败（已内联，存档会变大）');
+          });
         };
         im.src = r.result;
       };
@@ -3167,6 +3375,11 @@ registerTool({
       ro.disconnect();
       clearTimeout(saveTimer);
       if (pastePend) { clearTimeout(pastePend); pastePend = null; }
+      /* 释放图片缓存：一次进入画板可能加载几十 MB 的位图，
+       * 不清理的话会一直挂在 renderer 里（和当初 mermaid 常驻是同一类问题）。 */
+      imgCache.clear();
+      assetUrls.clear();
+      assetPending.clear();
     };
   }
 });

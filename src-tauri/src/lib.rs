@@ -1,12 +1,25 @@
 //! 个人工具箱 · Tauri 后端
 //!
 //! 只做四件事：
-//!   1. 把前端 AppStore 的全量 JSON 读写到磁盘（store_read / store_write）
+//!   1. 把前端 AppStore 的数据读写到磁盘
+//!      - 分键存储（store_read_key / store_write_key / store_del_key）：每键一个文件，
+//!        改画板不再重写整个题库
+//!      - 全量读写（store_read / store_write）：仅用于导入导出与迁移
 //!   2. 提供原生「另存为」对话框，替代 WebView 里不可控的 <a download>
-//!   3. 轮转保留最近几份存档，防止误删或写坏后无法回退
-//!   4. 只读地汇报系统状态（sysinfo / dir_usage），供首页「系统状态」面板展示
+//!   3. 管理画板图片资产（asset_put / asset_get / asset_del），
+//!      图片落盘为 data/assets/<sha1>.<ext>，避免 base64 撑爆存档
+//!   4. 只读地汇报系统状态（sysinfo / dir_usage / store_stats）
 //!
 //! 前端侧对应代码：web/index.html 的 AppStore 存储抽象层 + 系统状态模态框。
+//!
+//! 存储布局（DATA_DIR 下）：
+//! ```text
+//! data/
+//!   keys/                 每键一个 JSON：<key 的 sha1>.json
+//!   assets/               画板图片：<sha1>.<ext>
+//!   store.json            旧版全量存档（迁移后改名为 store.json.migrated-bak）
+//!   store.json.1/.2/.3    轮转备份
+//! ```
 
 use std::fs;
 use std::path::PathBuf;
@@ -30,8 +43,17 @@ use windows_sys::Win32::System::SystemInformation::{
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetSystemTimes};
 
-/// 全量存档文件名。前端所有 toolbox:* 键都存在这一个 JSON 里。
+/// 全量存档文件名（旧格式，迁移后仅作备份保留）。
 const STORE_FILE: &str = "store.json";
+
+/// 迁移完成后旧全量存档改成这个名字，作为回滚点。
+const STORE_MIGRATED: &str = "store.json.migrated-bak";
+
+/// 分键存储目录：每键一个小 JSON，避免「改一个键重写整个存档」。
+const KEYS_DIR: &str = "keys";
+
+/// 画板图片资产目录。
+const ASSETS_DIR: &str = "assets";
 
 /// 存档轮转保留的份数（.1 / .2 / .3）
 const BACKUP_KEEP: usize = 3;
@@ -43,8 +65,8 @@ const BACKUP_INTERVAL: Duration = Duration::from_secs(1800);
 #[derive(Default)]
 struct BackupGate(Mutex<Option<Instant>>);
 
-/// 用户指定的数据目录（不放系统盘）。所有 toolbox:* 键存在这一个 JSON 里。
-/// 放在项目目录下的 data/ 子文件夹，便于整体备份、不与源码混在一起。
+/// 用户指定的数据目录（不放系统盘）。放在项目目录下的 data/ 子文件夹，
+/// 便于整体备份、不与源码混在一起。
 /// 若要改位置，只改这里即可（注意：改后旧数据不会自动出现在新目录，
 /// 除非保留下方 migrate_legacy 的迁移逻辑，或手动搬移）。
 const DATA_DIR: &str = "D:\\Ai-file\\MyTool\\data";
@@ -54,6 +76,129 @@ fn store_path() -> Result<PathBuf, String> {
     let dir = PathBuf::from(DATA_DIR);
     fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
     Ok(dir.join(STORE_FILE))
+}
+
+/// 分键目录，自动创建。
+fn keys_dir() -> Result<PathBuf, String> {
+    let dir = PathBuf::from(DATA_DIR).join(KEYS_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建分键目录失败: {e}"))?;
+    Ok(dir)
+}
+
+/// 资产目录，自动创建。
+fn assets_dir() -> Result<PathBuf, String> {
+    let dir = PathBuf::from(DATA_DIR).join(ASSETS_DIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建资产目录失败: {e}"))?;
+    Ok(dir)
+}
+
+/// 用 SHA-1 给键名/文件名编个稳定且文件系统安全的短名。
+/// 键里含 `:` 和 `<` `>`（如 `toolbox:sketch:shapes`），Windows 文件名不允许。
+fn short_hash(s: &str) -> String {
+    // 自实现 SHA-1，避免为一个哈希引入新依赖（sha1 crate 未缓存）。
+    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+    let mut msg = s.as_bytes().to_vec();
+    let bit_len = (msg.len() as u64) * 8;
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for i in 0..80 {
+            let (f, k) = if i < 20 {
+                ((b & c) | ((!b) & d), 0x5A827999u32)
+            } else if i < 40 {
+                (b ^ c ^ d, 0x6ED9EBA1)
+            } else if i < 60 {
+                ((b & c) | (b & d) | (c & d), 0x8F1BBCDC)
+            } else {
+                (b ^ c ^ d, 0xCA62C1D6)
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    h.iter().map(|x| format!("{x:08x}")).collect()
+}
+
+/// 分键文件名。加 `.json` 后缀便于肉眼识别。
+fn key_file(key: &str) -> Result<PathBuf, String> {
+    Ok(keys_dir()?.join(format!("{}.json", short_hash(key))))
+}
+
+/// 把旧的全量 store.json 拆成分键文件。
+///
+/// 幂等：若旧文件已改名为 migrated-bak，直接返回；
+/// 原子性：先把每个键逐个写入并读回校验，全部成功后才改名旧文件。
+/// 不删数据：旧文件只改名，`.1/.2/.3` 备份原样保留。
+fn migrate_to_keys() -> Result<(), String> {
+    let dir = PathBuf::from(DATA_DIR);
+    let old = dir.join(STORE_FILE);
+    let done = dir.join(STORE_MIGRATED);
+
+    // 已迁过，或本来就没有旧文件 → 无需处理
+    if done.exists() || !old.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(&old).map_err(|e| format!("读取旧存档失败: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("旧存档不是合法 JSON，放弃迁移: {e}"))?;
+
+    let map = match value {
+        serde_json::Value::Object(m) => m,
+        _ => return Err("旧存档顶层不是对象，放弃迁移".to_string()),
+    };
+
+    fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
+
+    // 先全部写出来，再逐个读回校验，任何一个失败就中止（此时旧文件还在）
+    for (k, v) in &map {
+        let path = key_file(k)?;
+        let wrapper = serde_json::json!({ "k": k, "v": v.clone() });
+        let text = serde_json::to_string(&wrapper).map_err(|e| format!("序列化键 {k} 失败: {e}"))?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, text.as_bytes()).map_err(|e| format!("写入键 {k} 失败: {e}"))?;
+        fs::rename(&tmp, &path).map_err(|e| format!("落盘键 {k} 失败: {e}"))?;
+    }
+    for k in map.keys() {
+        let path = key_file(k)?;
+        let back = fs::read_to_string(&path).map_err(|e| format!("回读键 {k} 失败: {e}"))?;
+        let wrapper: serde_json::Value =
+            serde_json::from_str(&back).map_err(|e| format!("回读键 {k} 校验失败: {e}"))?;
+        // 键名必须能还原，否则读回时这份数据就丢了
+        if wrapper.get("k").and_then(|v| v.as_str()) != Some(k.as_str()) {
+            return Err(format!("回读键 {k} 的键名不匹配，放弃迁移"));
+        }
+    }
+
+    // 全部就位后才动旧文件（改名而非删除，留作回滚点）
+    fs::rename(&old, &done).map_err(|e| format!("归档旧存档失败: {e}"))?;
+    Ok(())
 }
 
 /// 首次切到新数据目录时，若目标 store.json 不存在、但旧 %APPDATA% 位置有存档，
@@ -113,10 +258,14 @@ fn rotate_backups(path: &std::path::Path, gate: &BackupGate) {
     }
 }
 
-/// 启动时一次性读全量存档。文件不存在不算错误，返回空对象即可。
+/// 启动时读全量存档（仅用于导入导出与兼容）。
+/// 顺带把旧的全量存档迁移成分键存储。
 #[tauri::command]
 fn store_read(app: AppHandle) -> Result<String, String> {
     migrate_legacy(&app)?;
+    // 旧格式 → 分键格式。失败不阻断启动：分键读取会各自回落为空，
+    // 而旧文件仍在，用户可以手工排查。
+    let _ = migrate_to_keys();
     let path = store_path()?;
     match fs::read_to_string(&path) {
         Ok(s) => Ok(s),
@@ -127,6 +276,9 @@ fn store_read(app: AppHandle) -> Result<String, String> {
 
 /// 全量写入。先校验 JSON 合法性，再经临时文件原子替换，
 /// 保证「写一半断电」不会留下半截损坏的存档。
+///
+/// 迁移到分键存储后，这个命令只用于「导入全部数据」这类一次性场景；
+/// 日常保存走 store_write_key，避免改一个键重写整个存档。
 #[tauri::command]
 fn store_write(data: String, gate: State<'_, BackupGate>) -> Result<usize, String> {
     // 坏数据绝不落盘 —— 前端如果 stringify 出错，这里会拦住
@@ -142,6 +294,223 @@ fn store_write(data: String, gate: State<'_, BackupGate>) -> Result<usize, Strin
     fs::rename(&tmp, &path).map_err(|e| format!("替换存档失败: {e}"))?;
 
     Ok(data.len())
+}
+
+/// 读取单个键。键不存在返回 "null"（与 JSON null 对应，前端据此回落到默认值）。
+#[tauri::command]
+fn store_read_key(key: String) -> Result<String, String> {
+    let path = key_file(&key)?;
+    match fs::read_to_string(&path) {
+        Ok(s) => {
+            // 文件里存的是 {"k":<键名>,"v":<值>} 包装，取出 v 返回
+            let wrapper: serde_json::Value =
+                serde_json::from_str(&s).map_err(|e| format!("键 {key} 内容损坏: {e}"))?;
+            let v = wrapper.get("v").cloned().unwrap_or(serde_json::Value::Null);
+            Ok(v.to_string())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("null".to_string()),
+        Err(e) => Err(format!("读取键 {key} 失败: {e}")),
+    }
+}
+
+/// 一次读回全部分键，合并成一个对象返回。仅用于启动时建立内存副本 —— 
+/// 键名被哈希过，前端无法自己拼文件名逐个读。
+///
+/// 键名存在文件内容里（格式：`{"k":"toolbox:quiz:questions","v":<原值>}`），
+/// 这样即使哈希算法变了也还能还原出原始键名。
+#[tauri::command]
+fn store_read_all() -> Result<String, String> {
+    let dir = keys_dir()?;
+    let mut out = serde_json::Map::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&p) else { continue };
+            let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+            let k = wrapper.get("k").and_then(|v| v.as_str()).unwrap_or("");
+            if k.is_empty() {
+                continue;
+            }
+            let v = wrapper.get("v").cloned().unwrap_or(serde_json::Value::Null);
+            out.insert(k.to_string(), v);
+        }
+    }
+    Ok(serde_json::Value::Object(out).to_string())
+}
+
+/// 写入单个键。原子替换，坏 JSON 拒绝落盘。
+/// 单键写入不触发全量轮转备份 —— 键文件本身很小，且频繁写会把备份冲掉。
+///
+/// 落盘格式是 `{"k":<键名>,"v":<值>}` 的包装：键名被哈希成文件名后，
+/// 原始键名只能靠文件内容保存，否则 `store_read_all` 无法还原。
+#[tauri::command]
+fn store_write_key(key: String, data: String) -> Result<usize, String> {
+    let value: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|e| format!("拒绝写入键 {key}：内容不是合法 JSON（{e}）"))?;
+
+    let wrapper = serde_json::json!({ "k": key, "v": value });
+    let text = serde_json::to_string(&wrapper)
+        .map_err(|e| format!("序列化键 {key} 失败: {e}"))?;
+
+    let path = key_file(&key)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text.as_bytes()).map_err(|e| format!("写临时文件失败: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("替换键 {key} 失败: {e}"))?;
+
+    Ok(text.len())
+}
+
+/// 删除单个键。键不存在也算成功（幂等）。
+#[tauri::command]
+fn store_del_key(key: String) -> Result<bool, String> {
+    let path = key_file(&key)?;
+    match fs::remove_file(&path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("删除键 {key} 失败: {e}")),
+    }
+}
+
+/// 列出所有分键的键名与体积，供系统状态面板展示。
+/// 文件名是哈希值，对用户没意义，所以从文件内容里读出原始键名。
+#[tauri::command]
+fn store_keys() -> Result<String, String> {
+    let dir = keys_dir()?;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue; // 跳过 .tmp 残留
+            }
+            let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
+            let name = fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|w| w.get("k").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .unwrap_or_else(|| {
+                    p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string()
+                });
+            items.push(serde_json::json!({ "key": name, "size": size }));
+        }
+    }
+    items.sort_by(|a, b| {
+        let sa = a.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let sb = b.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        sb.cmp(&sa)
+    });
+    let total: u64 = items
+        .iter()
+        .map(|i| i.get("size").and_then(|v| v.as_u64()).unwrap_or(0))
+        .sum();
+    Ok(serde_json::json!({
+        "dir": PathBuf::from(DATA_DIR).join(KEYS_DIR).to_string_lossy(),
+        "count": items.len(),
+        "total": total,
+        "items": items,
+    })
+    .to_string())
+}
+
+/// 保存画板图片资产。前端传 base64（不走字节数组，避免 JSON IPC 体积爆炸），
+/// 落盘为 assets/<sha1>.<ext>，返回给前端的是资产 id（即 sha1）。
+#[tauri::command]
+fn asset_put(data_base64: String, ext: String) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("资产 base64 解码失败: {e}"))?;
+
+    // 用内容哈希做文件名：同样的图重复插入只存一份，天然去重
+    let id = short_hash(&bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+
+    // 扩展名只允许字母数字，防止路径穿越
+    let clean_ext: String = ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let name = if clean_ext.is_empty() {
+        format!("{id}.bin")
+    } else {
+        format!("{id}.{}", clean_ext.to_ascii_lowercase())
+    };
+
+    let path = assets_dir()?.join(&name);
+    if !path.exists() {
+        let tmp = path.with_extension("tmp");
+        fs::write(&tmp, &bytes).map_err(|e| format!("写入资产失败: {e}"))?;
+        fs::rename(&tmp, &path).map_err(|e| format!("落盘资产失败: {e}"))?;
+    }
+    Ok(name)
+}
+
+/// 读取画板图片资产，返回 data URL 供 <img> 直接使用。
+#[tauri::command]
+fn asset_get(name: String) -> Result<String, String> {
+    // 只允许取裸文件名，挡住 ../ 之类的穿越
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("非法资产名".to_string());
+    }
+    let path = assets_dir()?.join(&name);
+    let bytes = fs::read(&path).map_err(|e| format!("读取资产 {name} 失败: {e}"))?;
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
+}
+
+/// 删除画板图片资产。不存在也算成功（幂等）。
+#[tauri::command]
+fn asset_del(name: String) -> Result<bool, String> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("非法资产名".to_string());
+    }
+    let path = assets_dir()?.join(&name);
+    match fs::remove_file(&path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("删除资产 {name} 失败: {e}")),
+    }
+}
+
+/// 统计资产目录：文件数与总体积，供系统状态面板展示。
+#[tauri::command]
+fn asset_stats() -> Result<String, String> {
+    let dir = assets_dir()?;
+    let mut count: u64 = 0;
+    let mut total: u64 = 0;
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("tmp") {
+                continue;
+            }
+            if p.is_file() {
+                count += 1;
+                total += ent.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "dir": dir.to_string_lossy(),
+        "count": count,
+        "total": total,
+    })
+    .to_string())
 }
 
 /// 原生「另存为」。前端把内容转成 base64 传进来 —— 不用字节数组，
@@ -462,14 +831,44 @@ async fn dir_usage(path: String) -> Result<String, String> {
     .to_string())
 }
 
-/// 当前存档的统计：主文件 + 轮转备份各自的字节数。
+/// 当前存档的统计：分键目录 + 资产目录 + 旧全量存档与轮转备份。
 /// 比在 JS 里算更准 —— `AppStore.exportAll()` 只返回内存里的键，
-/// 磁盘上的 `store.json.1/.2/.3` 备份前端完全看不到，而那是只增不减的隐性开销。
+/// 磁盘上的备份与资产前端完全看不到，而那是只增不减的隐性开销。
 #[tauri::command]
 fn store_stats() -> Result<String, String> {
     let path = PathBuf::from(DATA_DIR).join(STORE_FILE);
     let mut items = Vec::new();
     let mut total: u64 = 0;
+
+    // 分键目录：现在数据的主体
+    let kdir = PathBuf::from(DATA_DIR).join(KEYS_DIR);
+    let mut keys_bytes: u64 = 0;
+    let mut keys_count: u64 = 0;
+    if let Ok(rd) = fs::read_dir(&kdir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            keys_count += 1;
+            keys_bytes = keys_bytes.saturating_add(ent.metadata().map(|m| m.len()).unwrap_or(0));
+        }
+    }
+
+    // 资产目录：画板图片
+    let adir = PathBuf::from(DATA_DIR).join(ASSETS_DIR);
+    let mut assets_bytes: u64 = 0;
+    let mut assets_count: u64 = 0;
+    if let Ok(rd) = fs::read_dir(&adir) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("tmp") || !p.is_file() {
+                continue;
+            }
+            assets_count += 1;
+            assets_bytes = assets_bytes.saturating_add(ent.metadata().map(|m| m.len()).unwrap_or(0));
+        }
+    }
 
     for ext in &["", ".1", ".2", ".3"] {
         let p = PathBuf::from(format!("{}{}", path.to_string_lossy(), ext));
@@ -488,7 +887,24 @@ fn store_stats() -> Result<String, String> {
         }));
     }
 
-    Ok(serde_json::json!({ "items": items, "total": total, "dir": DATA_DIR }).to_string())
+    // 旧文件迁移后改名为 migrated-bak，单独列出以便用户确认可以删
+    let migrated = PathBuf::from(DATA_DIR).join(STORE_MIGRATED);
+    let migrated_bytes = if migrated.exists() {
+        fs::metadata(&migrated).map(|m| m.len()).unwrap_or(0)
+    } else {
+        0
+    };
+    total = total.saturating_add(migrated_bytes);
+
+    Ok(serde_json::json!({
+        "items": items,
+        "total": total,
+        "dir": DATA_DIR,
+        "keys": { "count": keys_count, "bytes": keys_bytes },
+        "assets": { "count": assets_count, "bytes": assets_bytes },
+        "migrated": { "bytes": migrated_bytes, "exists": migrated.exists() },
+    })
+    .to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -510,6 +926,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             store_read,
             store_write,
+            store_read_key,
+            store_write_key,
+            store_del_key,
+            store_read_all,
+            store_keys,
+            asset_put,
+            asset_get,
+            asset_del,
+            asset_stats,
             save_file,
             sysinfo,
             dir_usage,

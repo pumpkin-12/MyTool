@@ -108,19 +108,45 @@ ok(AS.get('m1') === 1 && AS.get('m2').a === 1, 'setMany 逐个 key 可读回');
 ok(AS.setMany({}) === true, 'setMany 空对象不报错');
 ok(AS.setMany(null) === false, 'setMany 传 null 返回 false');
 
-/* ---------------- 3. Tauri 模式 ---------------- */
-log('[3] Tauri 模式（invoke）');
-const writes = [];
+/* ---------------- 3. Tauri 模式（分键存储） ---------------- */
+log('[3] Tauri 模式（分键存储 store_write_key / store_read_all）');
+
+/* 模拟 Rust 侧的分键目录：键名 -> 值 */
+const disk = new Map();
+const writeLog = [];      // 每次 invoke 的记录，用于验证「只写变更的键」
 let failNextWrite = false;
+
 const invoke = (cmd, args) => {
-  if (cmd === 'store_read') return Promise.resolve(JSON.stringify({ 'toolbox:theme': 'dark' }));
-  if (cmd === 'store_write') {
-    writes.push(args.data);
+  if (cmd === 'store_read_all') {
+    return Promise.resolve(JSON.stringify(Object.fromEntries(disk)));
+  }
+  if (cmd === 'store_keys') {
+    return Promise.resolve(JSON.stringify({ count: disk.size, total: 0, items: [] }));
+  }
+  if (cmd === 'store_write_key') {
+    writeLog.push({ cmd, key: args.key });
     if (failNextWrite) { failNextWrite = false; return Promise.reject(new Error('disk full')); }
+    disk.set(args.key, JSON.parse(args.data));
     return Promise.resolve(args.data.length);
+  }
+  if (cmd === 'store_del_key') {
+    writeLog.push({ cmd, key: args.key });
+    disk.delete(args.key);
+    return Promise.resolve(true);
+  }
+  if (cmd === 'store_read') {
+    return Promise.resolve('{}');
+  }
+  if (cmd === 'store_write') {
+    writeLog.push({ cmd, key: '(full)' });
+    return Promise.resolve(0);
   }
   return Promise.reject(new Error('unknown command ' + cmd));
 };
+
+// 预置磁盘上已有的数据，模拟「上次运行留下的存档」
+disk.set('toolbox:theme', 'dark');
+disk.set('toolbox:quiz:questions', [{ id: 1, text: '旧题' }]);
 
 const s2 = makeSandbox({ __TAURI__: { core: { invoke } } });
 vm.createContext(s2);
@@ -132,26 +158,78 @@ ok(AN.isNative === true, 'isNative 在 Tauri 下为 true');
 (async () => {
   await AN.ready;
   ok(AN.get('theme', null) === 'dark', 'ready 后能读到磁盘上的 theme');
+  ok(AN.get('quiz:questions', null) !== null, 'ready 会合并读回全部分键');
 
+  /* ---- 关键：改一个键只写这一个键 ---- */
+  writeLog.length = 0;
   AN.set('a', 1);
-  AN.set('b', 2);
-  AN.set('c', 3);
   await AN.flush();
-  ok(writes.length === 3, '3 次 set 触发 3 次 store_write', 'writes=' + writes.length);
+  ok(writeLog.length === 1, 'set 一个键只触发一次写盘', 'writes=' + writeLog.length);
+  ok(writeLog[0].cmd === 'store_write_key' && writeLog[0].key === 'toolbox:a',
+     '走的是 store_write_key，且只写变更的那个键', JSON.stringify(writeLog[0]));
+  ok(disk.get('toolbox:theme') === 'dark', '未改动的键在磁盘上原样保留');
 
-  const parsed = writes.map(w => Object.keys(JSON.parse(w)).sort().join('|'));
-  ok(parsed[0] === 'toolbox:a|toolbox:theme',
-     '第 1 次写盘快照 = {a, theme}', parsed[0]);
-  ok(parsed[1] === 'toolbox:a|toolbox:b|toolbox:theme',
-     '第 2 次写盘快照 = {a, b, theme}', parsed[1]);
-  ok(parsed[2] === 'toolbox:a|toolbox:b|toolbox:c|toolbox:theme',
-     '第 3 次写盘快照 = {a, b, c, theme}', parsed[2]);
+  /* ---- 画板改动不再重写题库（本次优化的核心目的） ---- */
+  writeLog.length = 0;
+  const quizBefore = JSON.stringify(disk.get('toolbox:quiz:questions'));
+  AN.set('sketch:shapes', [{ id: 's1', type: 'rect' }]);
+  await AN.flush();
+  const quizWrites = writeLog.filter(w => w.key === 'toolbox:quiz:questions').length;
+  ok(quizWrites === 0, '改画板不会重写题库（题库文件零写入）', 'quiz writes=' + quizWrites);
+  ok(writeLog.length === 1 && writeLog[0].key === 'toolbox:sketch:shapes',
+     '只写了画板键', JSON.stringify(writeLog.map(w => w.key)));
+  ok(JSON.stringify(disk.get('toolbox:quiz:questions')) === quizBefore,
+     '题库在磁盘上逐字节未变');
 
-  const last = JSON.parse(writes[2]);
-  const trio = [last['toolbox:a'], last['toolbox:b'], last['toolbox:c']];
-  ok(JSON.stringify(trio) === '[1,2,3]',
-     '三次写入互不覆盖（已消除后写覆盖先写的竞态）', JSON.stringify(trio));
+  /* ---- 连续写同一键会合并（dirty 集合去重） ---- */
+  writeLog.length = 0;
+  AN.set('burst', 1);
+  AN.set('burst', 2);
+  AN.set('burst', 3);
+  await AN.flush();
+  ok(writeLog.filter(w => w.key === 'toolbox:burst').length === 1,
+     '链式排队时同一键的连续写入合并成一次', 'writes=' + writeLog.length);
+  ok(disk.get('toolbox:burst') === 3, '合并后落盘的是最后一个值');
 
+  /* ---- 尚未开始执行的那一批可以继续吸收新键 ----
+   * 语义说明：queued 只合并「还没轮到执行」的写入。已经落盘的不会回溯，
+   * 所以「先 set 再 await 让第一环跑起来，然后又 set」本来就是两次写 —— 这是对的。 */
+  writeLog.length = 0;
+  AN.set('burst2', 'a');
+  AN.set('burst3', 'x');            // 同一轮同步块里再写一个不同的键
+  await AN.flush();
+  const b2 = writeLog.filter(w => w.key === 'toolbox:burst2').length;
+  const b3 = writeLog.filter(w => w.key === 'toolbox:burst3').length;
+  ok(b2 === 1 && b3 === 1, '同一批次里的多个不同键各写一次', 'b2=' + b2 + ' b3=' + b3);
+  ok(disk.get('toolbox:burst2') === 'a' && disk.get('toolbox:burst3') === 'x',
+     '同批次多键的值都正确落盘');
+
+  /* ---- 已执行的批次不会被后续写入污染 ---- */
+  AN.set('bursta', 1);
+  await AN.flush();                  // 这一批已确认落盘
+  writeLog.length = 0;               // 从这里开始只统计第二批
+  AN.set('bursta', 2);
+  await AN.flush();
+  ok(disk.get('toolbox:bursta') === 2, '第二批落盘覆盖第一批的值');
+  ok(writeLog.filter(w => w.key === 'toolbox:bursta').length === 1,
+     '第二批只写自己那一次', 'writes=' + writeLog.length);
+
+  /* ---- setMany 只写涉及的键 ---- */
+  writeLog.length = 0;
+  AN.setMany({ m1: 1, m2: { a: 1 } });
+  await AN.flush();
+  const mkeys = writeLog.map(w => w.key).sort().join(',');
+  ok(mkeys === 'toolbox:m1,toolbox:m2', 'setMany 只写涉及的键', mkeys);
+
+  /* ---- remove 会真的删除磁盘上的键文件 ---- */
+  writeLog.length = 0;
+  AN.remove('theme');
+  await AN.flush();
+  ok(!disk.has('toolbox:theme'), 'remove 删掉了磁盘上的键');
+  ok(writeLog.some(w => w.cmd === 'store_del_key' && w.key === 'toolbox:theme'),
+     'remove 走 store_del_key 而非写入空值', JSON.stringify(writeLog));
+
+  /* ---- 失败可见性 ---- */
   failNextWrite = true;
   const toastsBefore = s2.__toasts.length;
   AN.set('d', 4);
@@ -166,13 +244,59 @@ ok(AN.isNative === true, 'isNative 在 Tauri 下为 true');
   await AN.flush();
   ok(AN.set('g', 7) === true, '写盘恢复后 set 重新返回 true');
 
+  /* ---- 导入全部数据：走全量，不逐个 set ---- */
   const dump = AN.exportAll();
+  ok(dump['toolbox:quiz:questions'] !== undefined, 'exportAll 含磁盘上的题库');
+
   AN.importAll({ 'toolbox:seq': 'from-import' });
   await AN.flush();
-  const newest = JSON.parse(writes[writes.length - 1]);
-  ok(newest['toolbox:seq'] === 'from-import', 'importAll 写入原生存档');
-  ok(newest['toolbox:theme'] === 'dark', 'importAll 不影响已有键');
+  ok(disk.get('toolbox:seq') === 'from-import', 'importAll 写入原生存档');
+  ok(disk.get('toolbox:quiz:questions') !== undefined, 'importAll 不影响已有键');
   ok(Object.keys(dump).length >= 5, 'exportAll 在原生模式下可用，共 ' + Object.keys(dump).length + ' 项');
+
+  /* ---- 图片资产接口 ---- */
+  const assetCalls = [];
+  const s3 = makeSandbox({
+    __TAURI__: {
+      core: {
+        invoke: (cmd, args) => {
+          if (cmd === 'store_read_all') return Promise.resolve('{}');
+          if (cmd === 'asset_put') { assetCalls.push(['put', args.ext]); return Promise.resolve('abc123.png'); }
+          if (cmd === 'asset_get') { assetCalls.push(['get', args.name]); return Promise.resolve('data:image/png;base64,AAA'); }
+          if (cmd === 'asset_del') { assetCalls.push(['del', args.name]); return Promise.resolve(true); }
+          return Promise.resolve(null);
+        }
+      }
+    }
+  });
+  vm.createContext(s3);
+  vm.runInContext(storeSrc + '\nglobalThis.__AS = AppStore;', s3);
+  const A3 = s3.__AS;
+  await A3.ready;
+
+  const putName = await A3.assetPut('data:image/png;base64,QUJD');
+  ok(putName === 'abc123.png', 'assetPut 返回资产名', putName);
+  ok(assetCalls[0][0] === 'put' && assetCalls[0][1] === 'png',
+     'assetPut 正确拆出扩展名（base64 部分不进 ext）', JSON.stringify(assetCalls[0]));
+
+  const gotUrl = await A3.assetGet('abc123.png');
+  ok(gotUrl === 'data:image/png;base64,AAA', 'assetGet 取回 data URL', String(gotUrl).slice(0, 30));
+
+  ok(await A3.assetGet('') === null, 'assetGet 空名字返回 null，不炸');
+  ok(await A3.assetDel('abc123.png') === true, 'assetDel 返回删除结果');
+
+  // 非 data URL 应被拒绝（防止把普通字符串当图片存）
+  let rejected = false;
+  try { await A3.assetPut('not-a-data-url'); } catch (e) { rejected = true; }
+  ok(rejected, 'assetPut 拒绝非法 data URL');
+
+  // 读取失败时返回 null 而非抛错 —— 渲染路径要能容忍缺图
+  const s4 = makeSandbox({ __TAURI__: { core: { invoke: () => Promise.reject(new Error('io')) } } });
+  vm.createContext(s4);
+  vm.runInContext(storeSrc + '\nglobalThis.__AS = AppStore;', s4);
+  const A4 = s4.__AS;
+  await A4.ready;
+  ok(await A4.assetGet('missing.png') === null, 'assetGet 读不到时返回 null（缺图不阻断渲染）');
 
   log('');
   log('===== 结果: ' + pass + ' passed, ' + fail + ' failed =====');
