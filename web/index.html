@@ -3975,15 +3975,18 @@ const QuizCore = (function () {
   }
 
   /* 交卷时同步错题本：只补录「答错或未答」的可判题，不重复添加、不改已有计数。
-   * 这一步很容易漏 —— 漏了的话，考卷里没做的题不会进错题本。 */
+   * 这一步很容易漏 —— 漏了的话，考卷里没做的题不会进错题本。
+   * 用 Set 记已存在的 id，避免每题都线性扫一遍错题本（题库上千题时是 O(n·m)）。 */
   function syncWrongOnSubmit(wrong, questions, answers, nowIso) {
     const list = (wrong || []).map(w => Object.assign({}, w));
+    const known = new Set(list.map(w => w.questionId));
     const ans = answers || [];
     (questions || []).forEach((q, i) => {
       if (!q || !isJudged(q.type)) return;
       const selected = i < ans.length ? ans[i] : null;
       if (selected != null && sameAnswer(answerOf(q), selected)) return;
-      if (!list.some(w => w.questionId === q.id)) {
+      if (!known.has(q.id)) {
+        known.add(q.id);
         list.push({ questionId: q.id, wrongCount: 1, lastWrongAt: nowIso });
       }
     });
@@ -4521,8 +4524,9 @@ registerTool({
       /* 按 id 配对后再过滤已删除的题。直接按位置切会让答案整体错位：
        * 存进度之后删过中间某道题，第 3 题的答案就会落到第 2 题头上。 */
       const pairs = [];
+      const byId = qById();   /* 一次建索引，避免逐题线性扫题库 */
       for (let i = 0; i < ids.length; i++) {
-        const q = questions.find(x => x.id === ids[i]);
+        const q = byId.get(ids[i]);
         if (q) pairs.push({ q: q, a: i < saved.length ? saved[i] : null });
       }
       if (!pairs.length) {
@@ -4665,7 +4669,7 @@ registerTool({
         html += '<tr><td class="num">' + (i + 1) + '</td><td>' + (q.category ? tag(q.category) : '<span class="hint">—</span>') +
           '</td><td>' + esc(q.text) + '</td>' +
           (bankTab === 'choice' ? '<td>' + esc(q.optionA) + '</td><td>' + esc(q.optionB) + '</td><td>' + esc(q.optionC) + '</td><td>' + esc(q.optionD) + '</td>' : '') +
-          '<td>' + tag(q.answer) + '</td>' +
+          '<td>' + tag(answerLabel(q, q.answer)) + '</td>' +
           '<td class="act"><button class="btn btn-sm" data-edit="' + q.id + '">编辑</button> ' +
           '<button class="btn btn-sm" data-del="' + q.id + '">删除</button></td></tr>';
       });
@@ -4824,17 +4828,25 @@ registerTool({
         const iCat = idx('分类'), iText = idx('题目'), iAns = idx('答案'), iExp = idx('解析');
         const iA = idx('A'), iB = idx('B'), iC = idx('C'), iD = idx('D');
         if (iText < 0 || iAns < 0) { showToast('表头缺少「题目」或「答案」列'); return; }
-        let added = 0, failed = 0, firstErr = '';
+        let added = 0, failed = 0, skipped = 0, firstErr = '';
         const now = new Date().toISOString();
         let maxId = QuizCore.nextId(questions);   // 循环外算一次最大 id，逐行自增，避免每行全量扫描
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
+          if (!row || !row.length) { skipped++; continue; }
           const get = k => (k >= 0 && row[k] != null) ? String(row[k]).trim() : '';
+          /* 表格末尾常有整行空白（Excel 的"已用区域"会多算几行）。
+           * 这些行不是错误，是没填内容，跳过即可 —— 计入失败数会让导入结果看着像出了问题。 */
+          const rawText = get(iText), rawAns = get(iAns);
+          if (!rawText && !rawAns && !get(iCat) && !get(iA) && !get(iB) && !get(iC) && !get(iD) && !get(iExp)) {
+            skipped++;
+            continue;
+          }
           try {
             const clean = QuizCore.normalizeQuestion({
               type: bankTab,
-              text: get(iText),
-              answer: get(iAns),
+              text: rawText,
+              answer: rawAns,
               category: get(iCat),
               optionA: get(iA), optionB: get(iB), optionC: get(iC), optionD: get(iD),
               explanation: get(iExp)
@@ -4844,7 +4856,9 @@ registerTool({
           } catch (e) { failed++; if (!firstErr) firstErr = '第 ' + (i + 1) + ' 行：' + e.message; }
         }
         saveData(); render();
-        showToast('导入 ' + added + ' 题' + (failed ? '，失败 ' + failed + ' 题（' + firstErr + '）' : ''));
+        showToast('导入 ' + added + ' 题' +
+          (failed ? '，失败 ' + failed + ' 题（' + firstErr + '）' : '') +
+          (skipped ? '，跳过 ' + skipped + ' 个空行' : ''));
       }).catch(e => showToast(e.message));
     }
 
@@ -4861,7 +4875,7 @@ registerTool({
       html += '<table class="qz-tbl"><thead><tr><th class="num">#</th><th>题目</th><th style="width:70px;">答案</th>' +
         '<th style="width:70px;">答错次数</th><th class="act">操作</th></tr></thead><tbody>';
       list.forEach((x, i) => {
-        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + esc(x.q.text) + '</td><td>' + tag(x.q.answer) +
+        html += '<tr><td class="num">' + (i + 1) + '</td><td>' + esc(x.q.text) + '</td><td>' + tag(answerLabel(x.q, x.q.answer)) +
           '</td><td>' + x.w.wrongCount + '</td>' +
           '<td class="act"><button class="btn btn-sm" data-wrong-del="' + x.q.id + '">移除</button></td></tr>';
       });

@@ -256,6 +256,92 @@ ok(QC.nextId([]) === 1 && QC.nextId([{ id: 3 }, { id: 7 }]) === 8, 'nextId 取�
 ok(QC.fmtDuration(0) === '00:00' && QC.fmtDuration(65) === '01:05' && QC.fmtDuration(3661) === '1:01:01',
    '时长格式化', QC.fmtDuration(3661));
 
+/* ---------------- 8. syncWrongOnSubmit 的 Set 版等价性（O(n·m) → O(n)） ---------------- */
+log('[8] 错题本同步：Set 索引版与朴素版结果一致');
+{
+  const lib = [];
+  for (let i = 1; i <= 300; i++) {
+    lib.push({ id: i, type: i % 3 === 0 ? 'fill' : 'choice', answer: 'A', text: 'T' + i });
+  }
+  // 预置 100 条错题记录，其中 id 11~110
+  const preset = [];
+  for (let i = 11; i <= 110; i++) preset.push({ questionId: i, wrongCount: 2, lastWrongAt: 't0' });
+  // 全答错（answer 为 'A'，这里选 'C'）→ 可判题应全部确保进错题本
+  const answers = lib.map(() => 'C');
+  const res = QC.syncWrongOnSubmit(preset, lib, answers, 't1');
+
+  const ids = res.map(x => x.questionId);
+  const uniq = Array.from(new Set(ids));
+  ok(uniq.length === ids.length, '无重复记录（Set 去重生效）', ids.length + ' 条 / ' + uniq.length + ' 唯一');
+
+  const judged = lib.filter(q => QC.isJudged(q.type));
+  /* 结果 = 所有判错的可判题 + 预置里那些本身就是 fill 的旧记录（它们不属于可判题，函数不动它们） */
+  const presetFill = preset.filter(p => !QC.isJudged((lib.find(q => q.id === p.questionId) || {}).type));
+  ok(res.length === judged.length + presetFill.length,
+     '判错的可判题全部进错题本，旧记录原样保留',
+     res.length + ' vs ' + judged.length + '+' + presetFill.length);
+  ok(judged.every(q => ids.indexOf(q.id) >= 0), '每个判错的可判题都在结果里');
+  ok(res.every(x => x.wrongCount === (x.questionId >= 11 && x.questionId <= 110 ? 2 : 1)),
+     '已存在的记录保持原计数，新补录的计数为 1');
+  ok(ids.indexOf(3) < 0, '填空题不进错题本（id 3 是 fill）', String(ids.indexOf(3)));
+
+  // 与原朴素实现逐项比对：结果必须完全等价
+  const naive = (function (wrong, questions, ans, nowIso) {
+    const list = (wrong || []).map(w => Object.assign({}, w));
+    (questions || []).forEach((q, i) => {
+      if (!q || !QC.isJudged(q.type)) return;
+      const sel = i < ans.length ? ans[i] : null;
+      if (sel != null && String(QC.answerOf(q)).toLowerCase() === String(sel).toLowerCase()) return;
+      if (!list.some(w => w.questionId === q.id)) list.push({ questionId: q.id, wrongCount: 1, lastWrongAt: nowIso });
+    });
+    return list;
+  })(preset, lib, answers, 't1');
+  ok(JSON.stringify(res) === JSON.stringify(naive), '与朴素 O(n·m) 实现产出完全相同的结果');
+}
+
+/* ---------------- 9. Excel 导入：空行跳过与失败计数 ---------------- */
+log('[9] Excel 导入：空行不计入失败数');
+{
+  const impStart = html.indexOf('function importExcel(file)');
+  ok(impStart >= 0, '定位 importExcel');
+  const impEnd = html.indexOf('\n    }', html.indexOf('showToast(\'导入 \'', impStart));
+  const impSrc = html.slice(impStart, impEnd > 0 ? impEnd : impStart + 3000);
+
+  ok(/skipped/.test(impSrc), '脚本里有 skipped 计数器');
+  ok(/if \(!row \|\| !row\.length\) \{ skipped\+\+; continue; \}/.test(impSrc),
+     '完全空行（row 不存在或无单元格）直接跳过');
+  ok(/if \(!rawText && !rawAns && !get\(iCat\)/.test(impSrc),
+     '所有列都为空的行跳过，不进 try/catch');
+  ok(/跳过 ' \+ skipped \+ ' 个空行/.test(impSrc), '提示里单独报告跳过的空行数');
+
+  // 关键反例：空行绝不能落到 normalizeQuestion 里抛错
+  const skipPos = impSrc.indexOf('if (!rawText && !rawAns');
+  const tryPos = impSrc.indexOf('try {');
+  ok(skipPos > 0 && tryPos > skipPos, '空行判定在 try 之前（否则会记一次失败）', skipPos + ' < ' + tryPos);
+
+  ok(/failure|failed \? '，失败 ' \+ failed/.test(impSrc), '仍保留真实失败的计数与首个错误行号');
+}
+
+/* ---------------- 10. 答案展示：判断题一律走 answerLabel ---------------- */
+log('[10] 答案展示：判断题显示「正确/错误」而非裸 A/B');
+{
+  // 找到 answerLabel 的实现并在沙箱里验证其映射
+  const m = html.match(/function answerLabel\(q, ans\) \{ return ([^}]+)\}/);
+  ok(!!m, '定位 answerLabel 实现');
+  if (m) {
+    const fn = new Function('return function (q, ans) { return ' + m[1] + '; }')();
+    ok(fn({ type: 'truefalse' }, 'A') === '正确', '判断题 A → 正确');
+    ok(fn({ type: 'truefalse' }, 'B') === '错误', '判断题 B → 错误');
+    ok(fn({ type: 'choice' }, 'C') === 'C', '选择题原样输出字母');
+  }
+
+  // 题库表格 / 错题本表格里不能再出现裸 tag(q.answer)
+  ok(html.indexOf('tag(q.answer)') < 0, '题库表格已改用 answerLabel', String(html.indexOf('tag(q.answer)')));
+  ok(html.indexOf('tag(x.q.answer)') < 0, '错题本表格已改用 answerLabel', String(html.indexOf('tag(x.q.answer)')));
+  const labelUses = (html.match(/answerLabel\(/g) || []).length;
+  ok(labelUses >= 7, 'answerLabel 调用点齐全（含题库表/错题本表）', labelUses + ' 处');
+}
+
 log('');
 log('===== 结果: ' + pass + ' passed, ' + fail + ' failed =====');
 fs.writeFileSync(REPORT, lines.join('\n') + '\n', 'utf8');
