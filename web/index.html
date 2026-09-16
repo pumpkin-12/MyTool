@@ -151,12 +151,28 @@
   .heat-grid i { width: 12px; height: 12px; border-radius: 2px; }
   .heat-legend { display: flex; align-items: center; gap: 3px; justify-content: flex-end; margin-top: 8px; font-size: 11px; color: var(--muted); }
   .heat-legend i { width: 12px; height: 12px; border-radius: 2px; }
-  .l0 { background: #ebedf0; }
-  .l1 { background: #9be9a8; }
-  .l2 { background: #40c463; }
-  .l3 { background: #216e39; }
-  .dark .l0 { background: #2c3036; }
+  /* 贡献度热力图色阶 —— 按「当天最高效率」上色（mood 1~5），不是按日志条数。
+   * m0 = 当天没写；mn = 写了但没评效率；m1~m5 = 效率 1~5，绿由浅到深。
+   * lo = 自定义区间外的空白格；lf = 未来日期。 */
+  .m0 { background: #ebedf0; }
+  .mn { background: #ebedf0; border: 1px dashed #a8b0b8; box-sizing: border-box; }
+  .m1 { background: #c9f0d2; }
+  .m2 { background: #9be9a8; }
+  .m3 { background: #4fc46e; }
+  .m4 { background: #2d9550; }
+  .m5 { background: #1a6b38; }
+  .heat-grid i.lo { background: transparent; }
   .heat-grid i.lf { background: transparent; border: 1px dashed var(--border); box-sizing: border-box; }
+  /* 深色下反过来：值越大越亮（深绿在深底上看不见） */
+  .dark .m0 { background: #2c3036; }
+  .dark .mn { background: #2c3036; border-color: #4a5058; }
+  .dark .m1 { background: #1b3d27; }
+  .dark .m2 { background: #24583a; }
+  .dark .m3 { background: #2f7a4d; }
+  .dark .m4 { background: #3fa363; }
+  .dark .m5 { background: #56c47c; }
+  .il-heat-range { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+  .il-heat-range input[type="date"] { width: auto; padding: 3px 8px; font-size: 12px; }
 
   /* —— 画板（无限画布白板） —— */
   .wb-wrap { position: relative; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #ffffff; user-select: none; }
@@ -1139,11 +1155,17 @@ registerTool({
     el.innerHTML = `
       <div class="il-heat">
         <div class="il-heat-head">
-          <span class="il-heat-title">贡献度</span>
+          <span class="il-heat-title">贡献度 · 按效率上色</span>
           <span style="display:flex; gap:8px; align-items:center;">
             <select class="field il-heat-year"></select>
             <span class="hint il-heat-stat"></span>
           </span>
+        </div>
+        <div class="il-heat-range" hidden>
+          <input type="date" class="field il-hr-from">
+          <span class="hint">至</span>
+          <input type="date" class="field il-hr-to">
+          <span class="hint">区间按周对齐显示</span>
         </div>
         <div class="heat-scroll">
           <div class="heat-months"></div>
@@ -1155,7 +1177,11 @@ registerTool({
             </div>
             <div class="heat-grid"></div>
           </div>
-          <div class="heat-legend"><span>少</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><span>多</span></div>
+          <div class="heat-legend">
+            <span>效率 低</span><i class="m1"></i><i class="m2"></i><i class="m3"></i><i class="m4"></i><i class="m5"></i><span>高</span>
+            <i class="mn" style="margin-left:10px"></i><span>写了未评</span>
+            <i class="m0" style="margin-left:10px"></i><span>没写</span>
+          </div>
         </div>
       </div>
       <div class="row">
@@ -1230,7 +1256,32 @@ registerTool({
       }).join('') || '<div class="empty">还没有日志，点「新日志」开始记录（日期可留空稍后选）</div>';
       renderHeat();
     }
+    /* 热力图范围：'6m' | '12m' | '<四位年份>' | 'custom'（自定义区间，用 heatFrom/heatTo） */
     let heatMode = '6m';
+    let heatFrom = '';
+    let heatTo = '';
+    /* 选择记进存档，下次打开保持 */
+    (function loadHeatPref() {
+      const s = AppStore.get('internlog:heat', null);
+      if (s && typeof s === 'object') {
+        if (s.mode) heatMode = String(s.mode);
+        if (s.from) heatFrom = String(s.from);
+        if (s.to) heatTo = String(s.to);
+      }
+    })();
+    function saveHeatPref() {
+      AppStore.set('internlog:heat', { mode: heatMode, from: heatFrom, to: heatTo });
+    }
+    /* YYYY-MM-DD → 本地零点 Date。
+     * 🔴 不能用 new Date('2026-09-01')：那按 UTC 解析，东八区会退回 8-31。 */
+    function parseYMD(s) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
+      if (!m) return null;
+      const d = new Date(+m[1], +m[2] - 1, +m[3]);
+      if (isNaN(+d)) return null;
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
     function calcStreak(counts) {
       const d = new Date();
       d.setHours(0, 0, 0, 0);
@@ -1239,20 +1290,51 @@ registerTool({
       while (counts[fmtDate(d)]) { n++; d.setDate(d.getDate() - 1); }
       return n;
     }
+    /* 区间选择框只在「自定义」模式下露出 */
+    function syncHeatRangeUI() {
+      const box = el.querySelector('.il-heat-range');
+      if (box) box.hidden = heatMode !== 'custom';
+      const fi = el.querySelector('.il-hr-from');
+      const ti = el.querySelector('.il-hr-to');
+      if (fi && fi.value !== heatFrom) fi.value = heatFrom;
+      if (ti && ti.value !== heatTo) ti.value = heatTo;
+    }
     function renderHeat() {
+      /* counts = 当天篇数；moods = 当天**最高**效率（同一天多篇取最大） */
       const counts = {};
-      let total = 0;
+      const moods = {};
       logs.forEach(l => {
         if (!l.date) return;
         counts[l.date] = (counts[l.date] || 0) + 1;
-        total++;
+        const m = Math.round(+l.mood || 0);
+        if (m > 0) moods[l.date] = Math.max(moods[l.date] || 0, m);
       });
       const gridEl = el.querySelector('.heat-grid');
       if (!gridEl) return;
       const now = new Date();
       now.setHours(0, 0, 0, 0);
       let start, end;
-      if (heatMode === '6m' || heatMode === '12m') {
+      /* 自定义区间的两端：用来把区间外的补齐格画成空白，而不是误显示成「没写」 */
+      let lo = null, hi = null;
+      if (heatMode === 'custom') {
+        const f = parseYMD(heatFrom);
+        const t = parseYMD(heatTo);
+        if (!f || !t || +f > +t) {
+          /* 起止没填全 / 顺序颠倒 → 退回近 6 个月，不至于画不出来。
+           * 顺手把纠正后的模式落盘，否则存档里会一直留着一个用不上的 custom。 */
+          heatMode = '6m';
+          saveHeatPref();
+          syncHeatRangeUI();
+          return renderHeat();
+        }
+        lo = f; hi = t;
+        const df = (f.getDay() + 6) % 7;
+        start = new Date(f);
+        start.setDate(start.getDate() - df);
+        const dt = (t.getDay() + 6) % 7;
+        end = new Date(t);
+        end.setDate(end.getDate() + (6 - dt));
+      } else if (heatMode === '6m' || heatMode === '12m') {
         const dow = (now.getDay() + 6) % 7;
         start = new Date(now);
         start.setDate(start.getDate() - dow - (heatMode === '6m' ? 25 : 52) * 7);
@@ -1279,29 +1361,53 @@ registerTool({
           }
           col++;
         }
-        const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        const key = fmtDate(d);
         const c = counts[key] || 0;
-        const lv = c === 0 ? 0 : c === 1 ? 1 : c === 2 ? 2 : 3;
+        const m = moods[key] || 0;
         const future = +d > +now;
-        const cls = future ? 'lf' : 'l' + lv;
-        const tip = future ? ' · 还没到' : (c ? ' · ' + c + ' 篇' : ' · 未写');
+        const outside = !!lo && (+d < +lo || +d > +hi);
+        /* 优先级：区间外空白 > 未来 > 没写 > 写了未评效率 > 效率 1~5 */
+        const cls = outside ? 'lo'
+          : future ? 'lf'
+            : c === 0 ? 'm0'
+              : m > 0 ? 'm' + Math.min(5, m) : 'mn';
+        let tip;
+        if (outside) tip = ' · 不在区间内';
+        else if (future) tip = ' · 还没到';
+        else if (c === 0) tip = ' · 没写';
+        else tip = ' · ' + c + ' 篇' + (m > 0 ? ' · 效率 ' + m : ' · 未评效率');
         cells += '<i class="' + cls + '"' + (+d === +now ? ' style="box-shadow:0 0 0 1.5px var(--accent)"' : '') + ' title="' + key + tip + '"></i>';
         d.setDate(d.getDate() + 1);
       }
       gridEl.innerHTML = cells;
       monthsEl.innerHTML = months;
+
+      /* 统计只算**可见区间内**的日志。
+       * 🔴 自定义模式下要用 lo/hi（用户实际选的起止），不能用 start/end ——
+       * 那两个是为对齐周格子向外扩过的，会把区间外的日志也算进来。
+       * （旧版这段统计的其实是全部日志，跟「近 6 个月」的文案对不上，顺手修正。） */
+      const fromKey = fmtDate(lo || start);
+      const toKey = fmtDate(hi || end);
+      let n = 0, moodSum = 0, moodCnt = 0, unrated = 0;
+      logs.forEach(l => {
+        if (!l.date || l.date < fromKey || l.date > toKey) return;
+        n++;
+        const m = Math.round(+l.mood || 0);
+        if (m > 0) { moodSum += m; moodCnt++; } else unrated++;
+      });
+      const label = heatMode === 'custom'
+        ? heatFrom + ' ~ ' + heatTo + ' '
+        : /^\d{4}$/.test(heatMode) ? heatMode + ' 年 '
+          : '近 ' + (heatMode === '6m' ? 6 : 12) + ' 个月 ';
+      let statText = label + '已写 ' + n + ' 篇';
+      if (moodCnt) statText += ' · 平均效率 ' + (moodSum / moodCnt).toFixed(1);
+      if (unrated) statText += '（' + unrated + ' 篇未评）';
+      /* 连续天数只在区间包含今天时才有意义 */
       const streak = calcStreak(counts);
-      let statText;
-      if (/^\d{4}$/.test(heatMode)) {
-        statText = heatMode + ' 年已写 ' + logs.filter(l => l.date && l.date.slice(0, 4) === heatMode).length + ' 篇';
-      } else {
-        const months = heatMode === '6m' ? 6 : 12;
-        statText = logs.length > total
-          ? '累计 ' + logs.length + ' 篇 · 近 ' + months + ' 个月 ' + total + ' 篇'
-          : '近 ' + months + ' 个月已写 ' + total + ' 篇';
-      }
-      if (streak > 0) statText += ' · 连续 ' + streak + ' 天';
+      const nowKey = fmtDate(now);
+      if (streak > 0 && nowKey >= fromKey && nowKey <= toKey) statText += ' · 连续 ' + streak + ' 天';
       if (statEl) statEl.textContent = statText;
+      syncHeatRangeUI();
       fillYearSelect();
     }
     function fillYearSelect() {
@@ -1310,13 +1416,34 @@ registerTool({
       const years = [...new Set([new Date().getFullYear()]
         .concat(logs.filter(l => l.date).map(l => +l.date.slice(0, 4))))].sort((a, b) => b - a);
       sel.innerHTML = '<option value="6m">近 6 个月</option><option value="12m">近 12 个月</option>'
+        + '<option value="custom">自定义区间</option>'
         + years.map(y => '<option value="' + y + '">' + y + ' 年</option>').join('');
       sel.value = String(heatMode);
       if (sel.value !== String(heatMode)) { heatMode = '6m'; sel.value = '6m'; }
     }
     el.querySelector('.il-heat-year').addEventListener('change', e => {
       heatMode = e.target.value;
+      /* 第一次切到自定义：给个合理默认（最近 30 天），省得面对两个空框 */
+      if (heatMode === 'custom' && (!heatFrom || !heatTo)) {
+        const t = new Date();
+        const f = new Date();
+        f.setDate(f.getDate() - 29);
+        heatFrom = fmtDate(f);
+        heatTo = fmtDate(t);
+      }
+      saveHeatPref();
       renderHeat();
+    });
+    /* 区间端点改动即时重画；把日期框清空则会退回近 6 个月（见 renderHeat 里的兜底） */
+    el.querySelectorAll('.il-hr-from, .il-hr-to').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const fi = el.querySelector('.il-hr-from');
+        const ti = el.querySelector('.il-hr-to');
+        heatFrom = (fi && fi.value) || '';
+        heatTo = (ti && ti.value) || '';
+        saveHeatPref();
+        renderHeat();
+      });
     });
     const TAG_LIST = ['学习', '开发', '会议', '踩坑', '沟通', '其他'];
     const LOG_TEMPLATE = '【今日完成】\n\n\n【收获与思考】\n\n\n【明日计划】\n';
