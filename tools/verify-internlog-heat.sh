@@ -86,6 +86,12 @@ HEAD="$(cat <<'EOF'
   var range = document.querySelector('.il-heat-range');
   var sel = document.querySelector('.il-heat-year');
   var saved = localStorage.getItem('toolbox:internlog:heat') || '';
+  /* 🔴 必须查**计算样式**，不能查 .hidden 属性。
+   * 属性只是"意图"，作者样式里的 display 会把它盖掉 ——
+   * 2026-09-16 就是这么漏掉一个真 bug：.il-heat-range 设了 hidden=true 却被
+   * 自己的 display:flex 覆盖，"只在自定义时显示"变成了"一直显示"，
+   * 而断言查 range.hidden 得到 true，给了个假通过。 */
+  function disp(el) { return el ? getComputedStyle(el).display : 'NO_EL'; }
 EOF
 )"
 
@@ -100,7 +106,7 @@ ASSERT_A="$HEAD
   has('统计含 已写 8 篇', stat, '已写 8 篇');
   has('统计含 平均效率 2.9', stat, '平均效率 2.9');
   has('统计含 未评篇数', stat, '1 篇未评');
-  eq('区间框隐藏', range ? range.hidden : 'NO_EL', true);
+  eq('区间框 computed display=none（真不可见）', disp(range), 'none');
   eq('下拉为 6m', sel ? sel.value : 'NO_EL', '6m');
   return JSON.stringify({ 通过: pass, 失败: fail, 统计行: stat });
 })()"
@@ -117,14 +123,14 @@ ASSERT_B="$HEAD
   has('统计标签为用户选的精确区间', stat, '2026-09-01 ~ 2026-09-05');
   eq('统计只算区间内（7 篇，不含 0831）', stat.indexOf('已写 7 篇') >= 0, true);
   has('统计含 平均效率 2.5', stat, '平均效率 2.5');
-  eq('区间框显示', range ? range.hidden : 'NO_EL', false);
+  eq('区间框 computed display≠none（真可见）', disp(range) !== 'none', true);
   has('存档记录 custom', saved, '\"mode\":\"custom\"');
   return JSON.stringify({ 通过: pass, 失败: fail, 统计行: stat });
 })()"
 
 ASSERT_C="$HEAD
   eq('清空区间后格子数回到 182（近 6 个月）', cells.length, 182);
-  eq('区间框重新隐藏', range ? range.hidden : 'NO_EL', true);
+  eq('区间框 computed display=none（真不可见）', disp(range), 'none');
   eq('下拉回到 6m', sel ? sel.value : 'NO_EL', '6m');
   eq('存档里的模式被纠正为 6m', saved.indexOf('\"mode\":\"6m\"') >= 0, true);
   return JSON.stringify({ 通过: pass, 失败: fail });

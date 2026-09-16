@@ -24,6 +24,12 @@
     --accent: #5b9bff;
   }
   * { box-sizing: border-box; }
+  /* 🔴 `hidden` 属性只是个 UA 样式 `[hidden]{display:none}`，
+   * **任何作者样式里的 display 都会把它盖掉**（UA 规则优先级最低）。
+   * .il-heat-range 就是被自己的 display:flex 吃掉了 hidden，导致
+   * 「只在自定义区间时显示」变成「一直显示」—— 2026-09-16 用户截图才发现。
+   * 这条兜底保证 hidden 永远算数，别再逐个元素去补。 */
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
