@@ -1156,8 +1156,45 @@ const registry = [];
 function registerTool(tool) { registry.push(tool); }
 
 /* 当前启用的工具（首页只显示这些；恢复某个工具把它加回列表即可，数据不会丢） */
-const ENABLED_TOOLS = ['internlog', 'sketch', 'mermaid', 'quiz'];
+const ENABLED_TOOLS = ['internlog', 'sketch', 'mermaid', 'quiz', 'drawio'];
 function isEnabled(t) { return ENABLED_TOOLS.indexOf(t.id) >= 0; }
+
+/* ---------- draw.io 跳转（画板与 draw.io 工具卡片共用） ----------
+ * 这里只是「入口」：真正的编辑仍在 draw.io 本体里做（离线、功能完整、成熟）。
+ * 不走内嵌：drawio-desktop 是 Electron 应用，安装目录里没有独立 webapp 目录，无法 iframe；
+ * 拉 webapp 源码那条路要几十 MB + 起本地服务 + 离线可用性未验证，收益只是"少切一次窗口"。
+ * 详见 docs/画板结构化绘图方案.md */
+const DRAWIO_KEY = 'drawio:path';
+
+function isTauri() { return !!(window.__TAURI__ && window.__TAURI__.core); }
+function drawioPath() { return AppStore.get(DRAWIO_KEY, '') || ''; }
+
+/* 启动 draw.io。args 为空 = 空启动；传一个文件路径 = 用 draw.io 打开该文件。 */
+async function launchDrawio(args) {
+  if (!isTauri()) { showToast('只有桌面端能启动外部程序'); return false; }
+  const p = drawioPath();
+  if (!p) { showToast('还没设置 draw.io.exe 路径，去「draw.io」工具里设一下'); return false; }
+  try {
+    await window.__TAURI__.core.invoke('spawn_detached', { exe: p, args: args || [] });
+    return true;
+  } catch (e) {
+    showToast('启动失败：' + (e && e.message ? e.message : e));
+    return false;
+  }
+}
+
+/* 把一段文本落到临时文件，再用 draw.io 打开它（画板导出 SVG 走这条路）。 */
+async function openTextInDrawio(text, name) {
+  if (!isTauri()) { showToast('只有桌面端能启动外部程序'); return false; }
+  if (!drawioPath()) { showToast('还没设置 draw.io.exe 路径，去「draw.io」工具里设一下'); return false; }
+  try {
+    const tmp = await window.__TAURI__.core.invoke('stage_text', { name: name, text: text });
+    return await launchDrawio([tmp]);
+  } catch (e) {
+    showToast('写入临时文件失败：' + (e && e.message ? e.message : e));
+    return false;
+  }
+}
 
 /* ============================================================
  * 工具 8：实习日志
@@ -2018,6 +2055,8 @@ registerTool({
           <button data-exp="png">导出 PNG</button>
           <button data-exp="pngcopy">复制 PNG 到剪贴板</button>
           <button data-exp="svg">导出 SVG</button>
+          <div class="wb-ctx-sep"></div>
+          <button data-exp="drawio">用 draw.io 编辑</button>
           <div class="wb-ctx-sep"></div>
           <button data-exp="json">备份 JSON</button>
           <button data-exp="import">导入 JSON</button>
@@ -3242,6 +3281,7 @@ registerTool({
       if (act === 'png') exportPNG();
       else if (act === 'pngcopy') copyPNG();
       else if (act === 'svg') exportSVG();
+      else if (act === 'drawio') openInDrawio();
       else if (act === 'json') exportJSON();
       else if (act === 'import') fileInput.click();
     });
@@ -3380,6 +3420,17 @@ registerTool({
       if (!svg) { showToast('画布是空的，先画点什么吧'); return; }
       const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
       if (await saveBlob(blob, '画板-' + todayKey() + '.svg')) showToast('已导出 SVG');
+    }
+    /* 把当前画板交给 draw.io 打开：先导出 SVG 到临时文件，再让 draw.io 打开它。
+     * draw.io 能导入 SVG 继续编辑（复杂图形可能被当成整块，属正常，不是 bug）。
+     * ⚠️ genSVG() 在有空内容时返回 null，画板空时要先拦住。 */
+    async function openInDrawio() {
+      commitEditor();
+      const svg = genSVG();
+      if (!svg) { showToast('画板是空的，没什么可交给 draw.io'); return; }
+      if (await openTextInDrawio(svg, 'toolbox-canvas.svg')) {
+        showToast('已交给 draw.io 打开');
+      }
     }
     async function exportJSON() {
       commitEditor();
@@ -5586,6 +5637,75 @@ registerTool({
       uiCloseModal();
       document.removeEventListener('keydown', onKey);
     };
+  }
+});
+
+/* ============================================================
+ * 工具：draw.io 跳转
+ *
+ * 只做「入口」，不做编辑 —— 编辑交给 draw.io 本体（离线、功能完整、成熟稳定）。
+ * 画板那边也有一项「用 draw.io 编辑」，把当前画板导出成 SVG 直接送过去。
+ * ============================================================ */
+registerTool({
+  id: 'drawio',
+  name: 'draw.io',
+  desc: '跳转过去编辑 · 不内嵌',
+  color: '#D85A30',
+  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/></svg>',
+  mount(el) {
+    el.innerHTML = `
+      <div class="note-card">
+        <div style="font-weight:500;margin-bottom:6px;">跳转到 draw.io</div>
+        <div class="hint" style="line-height:1.8;margin-bottom:12px;">
+          这里只是入口 —— 真正的编辑在 draw.io 本体里做。<br>
+          不做内嵌的原因：drawio-desktop 是 Electron 应用，安装目录里没有独立的 webapp 目录，无法 iframe；
+          拉 webapp 源码要几十 MB 且要起本地服务，离线可用性也未验证，而收益只是「少切一次窗口」。
+        </div>
+        <div class="row">
+          <button class="btn btn-primary dr-open">打开 draw.io</button>
+          <button class="btn dr-detect">自动检测路径</button>
+          <span class="hint dr-stat"></span>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <input class="field dr-path" placeholder="draw.io.exe 完整路径，例如 D:\\draw.io\\draw.io.exe">
+          <button class="btn dr-save">保存路径</button>
+        </div>
+        <div class="hint" style="margin-top:10px;line-height:1.8;">
+          画板里也有入口：左上角「导出 / 备份」→「用 draw.io 编辑」，会把当前画板导出成 SVG 交给 draw.io 打开。
+        </div>
+      </div>`;
+    const pathInput = el.querySelector('.dr-path');
+    const stat = el.querySelector('.dr-stat');
+    const refresh = () => {
+      const p = drawioPath();
+      pathInput.value = p;
+      stat.textContent = p ? ('当前：' + p) : '还没设置路径';
+    };
+    refresh();
+    el.querySelector('.dr-detect').addEventListener('click', async () => {
+      if (!isTauri()) { showToast('只有桌面端能自动检测'); return; }
+      try {
+        const found = await window.__TAURI__.core.invoke('detect_drawio');
+        if (found) {
+          AppStore.set(DRAWIO_KEY, found);
+          refresh();
+          showToast('已找到并保存');
+        } else {
+          showToast('常见安装位置都没找到，请手填路径');
+        }
+      } catch (e) {
+        showToast('检测失败：' + (e && e.message ? e.message : e));
+      }
+    });
+    el.querySelector('.dr-save').addEventListener('click', () => {
+      const v = (pathInput.value || '').trim();
+      AppStore.set(DRAWIO_KEY, v);
+      refresh();
+      showToast(v ? '路径已保存' : '已清空路径');
+    });
+    el.querySelector('.dr-open').addEventListener('click', async () => {
+      if (await launchDrawio([])) showToast('已启动 draw.io');
+    });
   }
 });
 
