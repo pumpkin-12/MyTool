@@ -23,7 +23,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -911,63 +910,6 @@ fn store_stats() -> Result<String, String> {
     .to_string())
 }
 
-/* ---------- 跳转到外部程序（draw.io） ----------
- * Tauri v2 没有 opener/shell 插件时，前端打不开任何外部程序（window.open 也不生效），
- * 所以这三条命令走 Rust 侧。**全部只用 std，不引任何新依赖、不需要新插件。**
- *
- * 为什么只是「启动」而不是「内嵌」：drawio-desktop 是 Electron 应用，
- * 安装目录里没有独立的 webapp 目录，无法 iframe；详见 docs/画板结构化绘图方案.md。 */
-
-/// 自动探测 draw.io 安装位置。用环境变量拼路径，**不硬编码任何用户名**。
-#[tauri::command]
-fn detect_drawio() -> Option<String> {
-    let mut cands: Vec<PathBuf> = Vec::new();
-    if let Ok(v) = std::env::var("LOCALAPPDATA") {
-        cands.push(PathBuf::from(v).join("Programs").join("draw.io").join("draw.io.exe"));
-    }
-    if let Ok(v) = std::env::var("ProgramFiles") {
-        cands.push(PathBuf::from(v).join("draw.io").join("draw.io.exe"));
-    }
-    if let Ok(v) = std::env::var("ProgramFiles(x86)") {
-        cands.push(PathBuf::from(v).join("draw.io").join("draw.io.exe"));
-    }
-    cands
-        .into_iter()
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().to_string())
-}
-
-/// 以「分离进程」方式启动一个程序，不等它结束。
-/// 子进程不受本进程生命周期影响 —— 工具箱关掉了，draw.io 仍开着。
-#[tauri::command]
-fn spawn_detached(exe: String, args: Vec<String>) -> Result<(), String> {
-    let p = PathBuf::from(&exe);
-    if !p.is_file() {
-        return Err(format!("找不到程序：{exe}"));
-    }
-    Command::new(&p)
-        .args(&args)
-        .spawn()
-        .map_err(|e| format!("启动失败：{e}"))?;
-    Ok(())
-}
-
-/// 把文本写进临时目录并返回绝对路径，供外部程序打开。
-/// 🔴 只取文件名部分 —— 否则调用方传 `..\\..\\x` 就能写到系统任意位置。
-#[tauri::command]
-fn stage_text(name: String, text: String) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("toolbox-stage");
-    fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败：{e}"))?;
-    let safe: String = name
-        .chars()
-        .filter(|c| *c != '/' && *c != '\\' && *c != ':' && *c != '\0')
-        .collect();
-    let file = if safe.trim().is_empty() { "stage.txt".to_string() } else { safe };
-    let path = dir.join(file);
-    fs::write(&path, text.as_bytes()).map_err(|e| format!("写临时文件失败：{e}"))?;
-    Ok(path.to_string_lossy().to_string())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -999,10 +941,7 @@ pub fn run() {
             save_file,
             sysinfo,
             dir_usage,
-            store_stats,
-            detect_drawio,
-            spawn_detached,
-            stage_text
+            store_stats
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
