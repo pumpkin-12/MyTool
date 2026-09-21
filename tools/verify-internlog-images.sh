@@ -13,16 +13,16 @@
 # 报告: .workbuddy/_img.txt
 set -u
 
-export PATH="/c/Users/DELL/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
+export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
 
 REPORT=".workbuddy/_img.txt"
 PORT=8903
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ" || exit 1
 
-PY="/c/Users/DELL/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$HOME/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 AB=""
-for c in /c/Users/DELL/.workbuddy/binaries/node/versions/*/node_modules/agent-browser/bin/agent-browser-win32-x64.exe; do
+for c in $HOME/.workbuddy/binaries/node/versions/*/node_modules/agent-browser/bin/agent-browser-win32-x64.exe; do
   [ -f "$c" ] && AB="$c"
 done
 [ -z "$AB" ] && { echo "找不到 agent-browser exe" >&2; exit 2; }

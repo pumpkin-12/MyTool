@@ -19,7 +19,7 @@
 #                                    sha256 少一个就白屏」—— 页面已无内联脚本，那条约束随之作废。
 set -u
 
-export PATH="/c/Users/DELL/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
+export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
 
 REPORT=".workbuddy/_csp.txt"
 SLOG=".workbuddy/_csp_server.log"
@@ -28,10 +28,10 @@ EXPECTED=46
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ" || exit 1
 
-PY="/c/Users/DELL/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$HOME/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 [ -x "$PY" ] || { echo "找不到 python：$PY" >&2; exit 2; }
 AB=""
-for c in /c/Users/DELL/.workbuddy/binaries/node/versions/*/node_modules/agent-browser/bin/agent-browser-win32-x64.exe; do
+for c in $HOME/.workbuddy/binaries/node/versions/*/node_modules/agent-browser/bin/agent-browser-win32-x64.exe; do
   [ -f "$c" ] && AB="$c"
 done
 [ -z "$AB" ] && { echo "找不到 agent-browser exe" >&2; exit 2; }

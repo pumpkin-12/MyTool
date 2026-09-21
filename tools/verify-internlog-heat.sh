@@ -15,18 +15,18 @@
 set -u
 
 # PATH 必须在最前面修好：本机 Git Bash 缺 coreutils，后面的 dirname/curl 都要用
-export PATH="/c/Users/DELL/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
+export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
 
 REPORT=".workbuddy/_heat.txt"
 PORT=8901
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ" || exit 1
 
-PY="/c/Users/DELL/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+PY="$HOME/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 
 # agent-browser 的 exe 位置随 node 版本目录变化，动态找
 AB=""
-for c in /c/Users/DELL/.workbuddy/binaries/node/versions/*/node_modules/agent-browser/bin/agent-browser-win32-x64.exe; do
+for c in $HOME/.workbuddy/binaries/node/versions/*/node_modules/agent-browser/bin/agent-browser-win32-x64.exe; do
   [ -f "$c" ] && AB="$c"
 done
 if [ -z "$AB" ]; then
