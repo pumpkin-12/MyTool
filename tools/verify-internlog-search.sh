@@ -16,6 +16,7 @@ set -u
 export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
 
 REPORT=".workbuddy/_search.txt"
+EXPECTED=67
 PORT=8913
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ" || exit 1
@@ -443,6 +444,14 @@ run() {
     fi
   done
   echo "  合计通过 $NP 项，失败段数 $NF"
+  # 🔴 校验实际断言数与声明一致。
+  # node 侧脚本有 _harness 的 expected 兜底，真机侧一直缺这道闸 ——
+  # 这正是「假绿」的入口：声明 30 项、实际只跑 23 项，报告照样打印「全绿」
+  # （历史上 mermaid 脚本 23 项只跑 8 项就是这么漏的）。
+  if [ "$NP" -ne "$EXPECTED" ]; then
+    echo "  ⛔ 实际断言数 $NP ≠ 声明的 $EXPECTED —— 可能中途有断言被跳过，或改了断言没改 EXPECTED。"
+    NF=$((NF + 1))
+  fi
   [ "$NF" -eq 0 ] && echo "  结果: 全绿" || echo "  结果: 有失败"
 }
 
