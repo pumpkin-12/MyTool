@@ -23,6 +23,10 @@
 const AppStore = (function () {
   const PREFIX = 'toolbox:';
   const K = k => PREFIX + k;
+  /* 🔴 绝不导出的键（第二层防线，定义在 TESTABLE:AppStore 段内以便被 verify 脚本抽到）。
+   * 只匹配 key / secret / token 三类 —— 不能用 `toolbox:ai:` 全前缀，
+   * 否则会误伤将来要能导出的 `toolbox:ai:usage`（用量统计）。 */
+  const NEVER_EXPORT = /^toolbox:ai:(key|secret|token)/i;
   const T = (typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
   const E = (typeof window !== 'undefined' && window.NativeStore) ? window.NativeStore : null;
   const native = !!(T || E);
@@ -149,12 +153,22 @@ const AppStore = (function () {
     },
     /* 全量导出 / 导入：浏览器版 → 桌面版迁移的唯一通道。
      * 导出的键一律带 PREFIX，导入时原样写回，两端格式对称。 */
+    /* 🔴 绝不导出的键（防御性闸门）。
+     * 背景：`exportAll()` 是「把内存里所有键原样搬运」，**没有任何字段过滤** ——
+     * 首页那个「导出全部数据」会把它原样写进 JSON 文件，将来发给别人/传网盘就跟着走了。
+     * 所以我们把 AI 的 API Key 放在 `data/ai/secret.json`（AppStore 根本不管的目录），
+     * 从物理上隔离。这道正则只是**第二层防线**：万一将来有人图省事把密钥写进了 AppStore，
+     * 也不会被导出。
+     * ⚠️ 只匹配 key / secret / token 三类 —— **不能用 `toolbox:ai:` 全前缀**，
+     * 那会把将来要能导出的 `toolbox:ai:usage`（用量统计）一起误伤。 */
     exportAll() {
       const out = {};
       if (native) {
         const src = mem || {};
         for (const k in src) {
-          if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = clone(src[k]);
+          if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+          if (NEVER_EXPORT.test(k)) continue;
+          out[k] = clone(src[k]);
         }
         return out;
       }
@@ -162,6 +176,7 @@ const AppStore = (function () {
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
           if (!k || k.indexOf(PREFIX) !== 0) continue;
+          if (NEVER_EXPORT.test(k)) continue;
           try { out[k] = JSON.parse(localStorage.getItem(k)); } catch (e) {}
         }
       } catch (e) {}

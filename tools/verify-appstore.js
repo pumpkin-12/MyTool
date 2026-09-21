@@ -9,7 +9,7 @@ const H = require('./_harness');
 
 const html = H.readFrontend();
 const vm = H.vm;
-const R = H.makeReport({ name: 'appstore', expected: 59 });
+const R = H.makeReport({ name: 'appstore', expected: 64 });
 const { log, ok } = R;
 
 /* ---------------- 1. 语法检查：逐个解析外链脚本 ---------------- */
@@ -99,6 +99,15 @@ ok(Object.keys(AS.exportAll()).length === 3, 'remove 后剩 3 项');
 
 ls.setItem('unrelated', '1');
 ok(Object.keys(AS.exportAll()).length === 3, 'exportAll 忽略非 toolbox: 前缀的键');
+
+/* 🔴 NEVER_EXPORT 闸门（浏览器模式）。
+ * 先**真的写进去**一个密钥键和一个用量键，再验导出 —— 否则断言是恒真的
+ * （啥都没写，当然"不含密钥"）。 */
+AS.set('ai:key', 'sk-should-never-export');
+AS.set('ai:usage', { calls: 3 });
+const gate = AS.exportAll();
+ok(!('toolbox:ai:key' in gate), 'exportAll 不导出 toolbox:ai:key（NEVER_EXPORT 闸门）');
+ok(!!gate['toolbox:ai:usage'], '但 toolbox:ai:usage 仍能导出（没被 `toolbox:ai:` 全前缀误伤）');
 
 // setMany：多个 key 合并成一次落盘
 const writesBefore = null;
@@ -255,6 +264,17 @@ ok(AN.isNative === true, 'isNative 在 Tauri 下为 true');
   ok(disk.get('toolbox:seq') === 'from-import', 'importAll 写入原生存档');
   ok(disk.get('toolbox:quiz:questions') !== undefined, 'importAll 不影响已有键');
   ok(Object.keys(dump).length >= 5, 'exportAll 在原生模式下可用，共 ' + Object.keys(dump).length + ' 项');
+
+  /* 🔴 NEVER_EXPORT 闸门在原生模式同样生效。
+   * 同样先写进去再验 —— 原生模式下 key 不是「写进内存」而是「落盘」，
+   * 所以前置条件也断言一下，证明这确实是个有内容的导出。 */
+  AN.set('ai:secret', 'sk-native-should-never-export');
+  await AN.flush();
+  ok(disk.get('toolbox:ai:secret') === 'sk-native-should-never-export',
+    '前置条件：密钥键确实写进了原生存档');
+  const dump2 = AN.exportAll();
+  ok(!('toolbox:ai:secret' in dump2), '原生模式下 exportAll 不含 ai 密钥类键');
+  ok(!!dump2['toolbox:quiz:questions'], '同一份导出里普通键照常在（闸门没有误伤）');
 
   /* ---- 图片资产接口 ---- */
   const assetCalls = [];
