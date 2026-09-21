@@ -9,7 +9,7 @@
 #    list.innerHTML 不会打断输入焦点**。这条一旦被破坏（有人把检索框挪进列表里），
 #    用户每敲一个字就失焦 —— 属于"能用但极难用"的退化，必须钉住。
 #
-# 覆盖 32 项断言。用法: bash tools/verify-internlog-search.sh
+# 覆盖 47 项断言（检索 32 · 趋势 15）。用法: bash tools/verify-internlog-search.sh
 # 报告: .workbuddy/_search.txt
 set -u
 
@@ -184,6 +184,85 @@ ASSERT_A6B="$PRE
   return JSON.stringify({ 通过: pass, 失败: fail });
 })()"
 
+# ---------- B 效率趋势曲线 ----------
+ASSERT_B="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var q = function (s) { return document.querySelector(s); };
+  var box = q('.il-trend');
+  ok('趋势卡片存在', !!box);
+  eq('数据够（有评分 3 天）→ 卡片可见', box.hidden, false);
+  ok('渲染出 SVG', !!q('.il-trend .tr-chart'));
+  eq('采样点数 = 有评分天数（3）', document.querySelectorAll('.tr-dot').length, 3);
+  eq('折线只有 1 段（相邻间隔都 ≤7 天）', document.querySelectorAll('.tr-line').length, 1);
+  eq('未评那天画了 1 个空心圆', document.querySelectorAll('.tr-un').length, 1);
+  /* 🔴 Y 轴固定 1~5：刻度文字必须正好是 1,2,3,4,5 五个 */
+  var ticks = [];
+  document.querySelectorAll('.il-trend .tr-lb').forEach(function (t) {
+    if (/^[1-5]$/.test(t.textContent.trim())) ticks.push(t.textContent.trim());
+  });
+  eq('🔴 Y 轴刻度恰好是 1~5（固定量程，不自动缩放）', ticks.join(','), '1,2,3,4,5');
+  ok('标题标注了「同日多篇取最高」', (q('.il-trend-range') || {}).textContent.indexOf('同日多篇取最高') >= 0);
+  ok('统计行给了有评分天数与覆盖天数', /有评分 \d+ 天 · 覆盖区间 \d+ 天/.test((q('.il-trend-stat') || {}).textContent));
+  ok('横轴两端标了起止日期', document.querySelectorAll('.il-trend .tr-lb').length >= 7);
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+# 切到「自定义区间」看趋势图是否跟着热力图同步
+ACT_B_RANGE="$(cat <<'EOF'
+(function () {
+  var sel = document.querySelector('.il-heat-year');
+  sel.value = 'custom';
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  var f = document.querySelector('.il-hr-from'), t = document.querySelector('.il-hr-to');
+  f.value = '2026-09-01'; f.dispatchEvent(new Event('change', { bubbles: true }));
+  t.value = '2026-09-10'; t.dispatchEvent(new Event('change', { bubbles: true }));
+  return 'switched';
+})()
+EOF
+)"
+
+ASSERT_B_RANGE="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var q = function (s) { return document.querySelector(s); };
+  ok('切到自定义区间后卡片仍可见', q('.il-trend').hidden === false);
+  ok('区间文案跟着变成自定义日期', (q('.il-trend-range') || {}).textContent.indexOf('2026-09-01 ~ 2026-09-10') >= 0);
+  ok('SVG 仍在', !!q('.il-trend .tr-chart'));
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+# 数据不足：只有 1 条有评分 → 整块应隐藏（一个点连不成趋势）
+SEED_THIN="$(cat <<'EOF'
+(function () {
+  localStorage.setItem('toolbox:internlog:items', JSON.stringify([
+    { id:'x', date:'2026-09-01', text:'只有一条有评分', mood:3, tags:[], ts:1 },
+    { id:'y', date:'2026-09-02', text:'这条没评分', mood:0, tags:[], ts:2 }
+  ]));
+  return 'thin';
+})()
+EOF
+)"
+
+ASSERT_B_THIN="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  var q = function (s) { return document.querySelector(s); };
+  eq('🔴 只有 1 条有评分 → 趋势卡片整体隐藏（不留空框）', q('.il-trend').hidden, true);
+  eq('隐藏时也不该有残留 SVG', document.querySelectorAll('.il-trend .tr-chart').length, 0);
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
 run() {
   echo "exe : $AB"
   echo "url : $URL"
@@ -208,11 +287,18 @@ run() {
   step "A6. 落盘" "$ASSERT_A6" >/dev/null
   "$AB" reload >/dev/null 2>&1; sleep 16
   step "A6b. reload 后筛选状态保持" "$ASSERT_A6B"; RA6="$LAST"
+  step "B1. 趋势曲线渲染" "$ASSERT_B";             RB1="$LAST"
+  "$AB" eval "$ACT_B_RANGE" >/dev/null; sleep 1
+  step "B2. 趋势图跟随热力图区间" "$ASSERT_B_RANGE"; RB2="$LAST"
+  "$AB" eval "$SEED_THIN" >/dev/null; sleep 1
+  "$AB" reload >/dev/null 2>&1; sleep 16
+  step "B3. 数据不足时隐藏" "$ASSERT_B_THIN";       RB3="$LAST"
 
   echo ""
   echo "================= 汇总 ================="
   local NP=0 NF=0
-  for pair in "A0:$RA0" "A1:$RA1" "A2:$RA2" "A3:$RA3" "A4:$RA4" "A5:$RA5" "A6b:$RA6"; do
+  for pair in "A0:$RA0" "A1:$RA1" "A2:$RA2" "A3:$RA3" "A4:$RA4" "A5:$RA5" "A6b:$RA6" \
+              "B1:$RB1" "B2:$RB2" "B3:$RB3"; do
     local n="${pair%%:*}" v="${pair#*:}"
     if printf '%s' "$v" | grep -qF '失败\":[]'; then
       local p; p=$(printf '%s' "$v" | sed -n 's/.*通过\\":\([0-9]\{1,\}\).*/\1/p')

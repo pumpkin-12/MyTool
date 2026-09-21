@@ -298,6 +298,13 @@ registerTool({
           </div>
         </div>
       </div>
+      <div class="il-trend" hidden>
+        <div class="il-heat-head">
+          <span class="il-heat-title">效率趋势 <span class="il-trend-range"></span></span>
+          <span class="hint il-trend-stat"></span>
+        </div>
+        <div class="il-trend-box"></div>
+      </div>
       <div class="row">
         <button class="btn btn-primary il-add">+ 新日志</button>
         <button class="btn il-report-btn">生成周报</button>
@@ -661,6 +668,81 @@ registerTool({
       if (fi && fi.value !== heatFrom) fi.value = heatFrom;
       if (ti && ti.value !== heatTo) ti.value = heatTo;
     }
+    /* ---------- 效率趋势曲线 ----------
+     * 零依赖手写 SVG（照 defect.js:660-685 的路子）。选 SVG 不选 canvas 的理由：
+     * **颜色由 CSS 类承担，深浅色主题自动跟随** —— canvas 得取色 + 监听主题重绘 + 处理 DPR。
+     *
+     * 🔴 三条硬规则（都是"趋势图最经典的误导"）：
+     *   1. 横轴按**真实自然日等距**，不按"第几个数据点等距" —— 否则
+     *      "半年里只有 3 个点"会被画成三个密集采样，完全看不出稀疏。
+     *   2. 相邻有评分点间隔 > 7 天就**断笔**（IlCore.trendSegments）——
+     *      跨越大半个月的连线会暗示"持续下降"。
+     *   3. Y 轴**固定 1~5，绝不自动缩放** —— 自动缩放会把 3.0→3.2 画成剧烈起伏。
+     *
+     * 口径与热力图一致：**同一天多篇取最高**（renderHeat 用 Math.max），图上标注出来，
+     * 否则同一天在两处会显示成两个不同的效率值。
+     * 区间用热力图传进来的 fromKey/toKey（用户选的精确端点），**不是按周外扩过的 start/end**。 */
+    function renderTrend(fromKey, toKey, label) {
+      const box = el.querySelector('.il-trend');
+      const cv = el.querySelector('.il-trend-box');
+      const st = el.querySelector('.il-trend-stat');
+      if (!box || !cv) return;
+      const d = IlCore.trendSeries(logs, fromKey, toKey);
+      /* 一个点连不成趋势 —— 数据不够就整块收起来，不留空框 */
+      if (d.rated < 2) { box.hidden = true; return; }
+      box.hidden = false;
+      el.querySelector('.il-trend-range').textContent = '· ' + String(label).trim() + '（同日多篇取最高）';
+      st.textContent = '有评分 ' + d.rated + ' 天 · 覆盖区间 ' + d.days + ' 天'
+        + (d.avg != null ? ' · 平均 ' + d.avg : '');
+
+      const W = 680, H = 172, L = 26, R = 12, T = 12, B = 30;
+      const iw = W - L - R, ih = H - T - B;
+      const total = d.days - 1;                       // 端点之间的天数，用于等距换算
+      const xOf = key => L + (total <= 0 ? iw / 2 : iw * (IlCore.diffDays(fromKey, key) / total));
+      const yOf = m => T + ih * (1 - (m - 1) / 4);    // Y 轴固定 1~5
+      let g = '';
+
+      /* 网格 + Y 轴刻度（量程固定，所以 5 条都标出来） */
+      [1, 2, 3, 4, 5].forEach(m => {
+        const y = yOf(m).toFixed(1);
+        g += '<line class="tr-gl" x1="' + L + '" y1="' + y + '" x2="' + (W - R) + '" y2="' + y + '"></line>';
+        g += '<text class="tr-lb" x="' + (L - 5) + '" y="' + (parseFloat(y) + 3.5) + '" text-anchor="end">' + m + '</text>';
+      });
+
+      /* 主折线：逐段画，段内才连线（断笔 = 规则 2） */
+      IlCore.trendSegments(d.points, 7).forEach(seg => {
+        if (seg.length < 2) return;
+        const pts = seg.map(p => xOf(p.date).toFixed(1) + ',' + yOf(p.mood).toFixed(1)).join(' ');
+        g += '<polyline class="tr-line" points="' + pts + '"></polyline>';
+      });
+      /* 7 日移动平均：更粗更淡，作背景趋势（窗口内 <2 条不出点，见 IlCore.movingAvg） */
+      const ma = IlCore.movingAvg(d.points, 7);
+      if (ma.length >= 2) {
+        g += '<polyline class="tr-ma" points="'
+          + ma.map(p => xOf(p.date).toFixed(1) + ',' + yOf(p.value).toFixed(1)).join(' ') + '"></polyline>';
+      }
+      /* 采样点（带原生 tooltip） */
+      d.points.forEach(p => {
+        g += '<circle class="tr-dot" cx="' + xOf(p.date).toFixed(1) + '" cy="' + yOf(p.mood).toFixed(1)
+          + '" r="3.2"><title>' + esc(p.date + ' ' + IlCore.weekdayOf(p.date) + ' 效率 ' + p.mood + '/5'
+          + (p.count > 1 ? '（当天 ' + p.count + ' 篇，取最高）' : '')) + '</title></circle>';
+      });
+      /* 「有日志但未评」：空心虚线圆，压在最底下一条线上 ——
+       * 语义是"没打分"，不是"效率 1"，所以不能用实心点、也不能画在 Y=1 上。 */
+      d.unrated.forEach(p => {
+        g += '<circle class="tr-un" cx="' + xOf(p.date).toFixed(1) + '" cy="' + (T + ih + 8) + '" r="3">'
+          + '<title>' + esc(p.date + ' 写了 ' + p.count + ' 篇 · 未评效率') + '</title></circle>';
+      });
+      /* 横轴只标两端 —— 区间可能跨一年，全标会糊成一团 */
+      g += '<text class="tr-lb" x="' + L + '" y="' + (H - 6) + '" text-anchor="start">' + esc(fromKey) + '</text>';
+      g += '<text class="tr-lb" x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">' + esc(toKey) + '</text>';
+
+      cv.innerHTML = '<svg class="tr-chart" viewBox="0 0 ' + W + ' ' + H
+        + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="效率趋势">' + g + '</svg>'
+        + '<div class="tr-legend"><span><i class="tr-c-line"></i>每日效率</span>'
+        + '<span><i class="tr-c-ma"></i>7 日平均</span>'
+        + (d.unrated.length ? '<span><i class="tr-c-un"></i>有日志未评</span>' : '') + '</div>';
+    }
     function renderHeat() {
       /* counts = 当天篇数；moods = 当天**最高**效率（同一天多篇取最大） */
       const counts = {};
@@ -771,6 +853,9 @@ registerTool({
       if (statEl) statEl.textContent = statText;
       syncHeatRangeUI();
       fillYearSelect();
+      /* 趋势图复用热力图这一档的区间（fromKey/toKey 是用户选的精确端点，不是外扩过的）。
+       * 放在 renderHeat 末尾，这样切「近 6 个月 / 12 个月 / 自定义」时两张图自动同步。 */
+      renderTrend(fromKey, toKey, label);
     }
     function fillYearSelect() {
       const sel = el.querySelector('.il-heat-year');
