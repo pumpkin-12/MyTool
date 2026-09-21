@@ -6,6 +6,125 @@ function esc(s) {
 }
 /* 标签条按钮串（题库、缺陷统计共用）。list 是 [键, 文字] 数组；attr 默认 data-tab。
  * 键和文字都过 esc —— 它们进的是属性和 HTML。 */
+/* ---------- 极简 Markdown 渲染（日志预览用） ----------
+ * 🔴 安全要点：文本是**用户从网页/聊天里粘进来的**，必须当不可信输入。
+ *    所以是「先 esc 转义、再按白名单加标签」，而不是「先加标签、再过滤」。
+ *    链接只放行 http/https —— 挡掉 javascript: / data: 这类伪协议。
+ *
+ * 支持：围栏代码块 · 行内代码 · 标题 #~###### · 粗体/斜体/删除线 · 链接 ·
+ *       无序/有序列表 · 引用 · 分隔线 · 管道表格
+ * 不支持的一律原样显示（宁可看到原始符号，也不要瞎猜着渲染）。
+ *
+ * 用**逐行状态机**而不是一串 replace：replace 会互相污染，
+ * 代码块里的 `*` 被斜体规则吃掉是这类实现的经典 bug。 */
+function mdToHtml(src) {
+  const lines = String(src == null ? '' : src).split('\n');
+  const out = [];
+  let para = [];      // 当前段落的行
+  let list = null;    // 'ul' | 'ol' | null
+  let quote = [];     // 当前引用的行
+
+  const flushPara = () => {
+    if (para.length) { out.push('<p>' + para.map(mdInline).join('<br>') + '</p>'); para = []; }
+  };
+  const flushList = () => { if (list) { out.push('</' + list + '>'); list = null; } };
+  const flushQuote = () => {
+    if (quote.length) { out.push('<blockquote>' + quote.map(mdInline).join('<br>') + '</blockquote>'); quote = []; }
+  };
+  const flushAll = () => { flushPara(); flushList(); flushQuote(); };
+
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+
+    /* 围栏代码块：```lang ... ``` —— 内容整段 esc，不做任何行内解析 */
+    const fence = /^\s*```+\s*([^\s`]*)\s*$/.exec(ln);
+    if (fence) {
+      flushAll();
+      const lang = (fence[1] || '').trim();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^\s*```+\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+      out.push('<pre class="md-code"' + (lang ? ' data-lang="' + esc(lang) + '"' : '')
+        + '><code>' + esc(buf.join('\n')) + '</code></pre>');
+      continue;
+    }
+
+    if (!ln.trim()) { flushAll(); continue; }                       // 空行 = 段落结束
+
+    let m;
+    if ((m = /^(#{1,6})\s+(.*)$/.exec(ln))) {                       // 标题
+      flushAll();
+      const lv = m[1].length;
+      out.push('<h' + lv + '>' + mdInline(m[2]) + '</h' + lv + '>');
+      continue;
+    }
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(ln)) {               // 分隔线
+      flushAll();
+      out.push('<hr>');
+      continue;
+    }
+    if ((m = /^\s*>\s?(.*)$/.exec(ln))) {                           // 引用（连续行合并）
+      flushPara(); flushList();
+      quote.push(m[1]);
+      continue;
+    }
+
+    /* 管道表格：第一行是表头，第二行必须是含 - 的分隔行 */
+    if (ln.indexOf('|') >= 0 && i + 1 < lines.length
+      && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1]) && lines[i + 1].indexOf('-') >= 0) {
+      flushAll();
+      const cells = r => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+      const head = cells(ln);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
+      i--;
+      out.push('<table class="md-table"><thead><tr>'
+        + head.map(c => '<th>' + mdInline(c) + '</th>').join('')
+        + '</tr></thead><tbody>'
+        + rows.map(r => '<tr>' + r.map(c => '<td>' + mdInline(c) + '</td>').join('') + '</tr>').join('')
+        + '</tbody></table>');
+      continue;
+    }
+
+    if ((m = /^\s*[-*+]\s+(.*)$/.exec(ln))) {                       // 无序列表
+      flushPara(); flushQuote();
+      if (list !== 'ul') { flushList(); out.push('<ul>'); list = 'ul'; }
+      out.push('<li>' + mdInline(m[1]) + '</li>');
+      continue;
+    }
+    if ((m = /^\s*\d+[.)]\s+(.*)$/.exec(ln))) {                     // 有序列表
+      flushPara(); flushQuote();
+      if (list !== 'ol') { flushList(); out.push('<ol>'); list = 'ol'; }
+      out.push('<li>' + mdInline(m[1]) + '</li>');
+      continue;
+    }
+
+    flushList(); flushQuote();
+    para.push(ln);
+  }
+  flushAll();
+  return out.join('');
+}
+
+/* 行内语法。esc 之后再替换；行内代码先摘出来用占位符保护，
+ * 免得 `a*b*c` 里面的 * 被斜体规则吃掉。 */
+function mdInline(s) {
+  const codes = [];
+  let t = esc(s);
+  t = t.replace(/`([^`]+)`/g, (m, c) => {
+    codes.push(c);
+    return '\u0000C' + (codes.length - 1) + '\u0000';
+  });
+  t = t.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g,
+    '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>');
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  t = t.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+  t = t.replace(/\u0000C(\d+)\u0000/g, (m, n) => '<code class="md-ic">' + codes[+n] + '</code>');
+  return t;
+}
+
 function tabButtons(list, active, attr) {
   const a = attr || 'data-tab';
   return list.map(p =>

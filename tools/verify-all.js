@@ -29,10 +29,11 @@ const BROWSER_SCRIPTS = [
   'verify-sketch-core.sh',
   'verify-internlog-heat.sh',
   'verify-internlog-images.sh',
+  'verify-internlog-md.sh',
   'verify-csp.sh',
 ];
 
-/* 三个真机脚本约定用 exit 2 表示「环境缺依赖」，不是测试失败。 */
+/* 真机脚本约定用 exit 2 表示「环境缺依赖」，不是测试失败。 */
 const SKIP_EXIT = 2;
 
 const jsOnly = process.argv.includes('--js');

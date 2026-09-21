@@ -8,7 +8,7 @@
 
 | 工具 | 说明 |
 | --- | --- |
-| **实习日志**（internlog） | 按日期记录工作内容，支持心情、标签、备注、配图（粘贴 / 拖入 / 选文件）、关键词检索，贡献度热力图 |
+| **实习日志**（internlog） | 按日期记录工作内容，支持心情、标签、备注、配图（粘贴 / 拖入 / 选文件）、关键词检索，贡献度热力图；正文可切 **Markdown 预览**，周报可导出 **.md / .html（Word 可直接打开）** |
 | **无限画板**（sketch） | 画笔 / 便签 / 直线箭头 / 选择 / 图片 / 迷你地图 / 对齐参考线 / 触屏缩放，支持导出 PNG、SVG、JSON |
 | **Mermaid 编辑器**（mermaid） | 离线 Mermaid 渲染，实时预览 + 语法错误行定位，按需加载并在离开时释放内存 |
 | **刷题**（quiz） | 导入题目（Excel / JSON）建题库，支持随机练习、错题重练、成绩记录与统计分析 |
@@ -229,7 +229,7 @@ node tools/verify-all.js --js   # 只跑无外部依赖的 6 个（CI 用）
 
 零参数、结果打 stdout、退出码 0=全通过。单跑某一个也可以：`node tools/verify-appstore.js`。
 
-**为什么需要 `--js`**：四个 `.sh` 脚本要真机浏览器（`agent-browser` + 本地静态服务），因为画板的行为全在 canvas 渲染 + pointer 事件里，静态断言查不出「拖一下到底发生了没有」；CSP 更是只有浏览器才会执行。**画板没有任何 node 侧覆盖** —— 改动画板后必须本机补跑 `bash tools/verify-sketch-core.sh`。
+**为什么需要 `--js`**：五个 `.sh` 脚本要真机浏览器（`agent-browser` + 本地静态服务），因为画板的行为全在 canvas 渲染 + pointer 事件里，静态断言查不出「拖一下到底发生了没有」；CSP 与 Markdown 预览/导出更是只有浏览器才会执行。**画板没有任何 node 侧覆盖** —— 改动画板后必须本机补跑 `bash tools/verify-sketch-core.sh`。
 
 `verify-csp.sh` 与其它 `.sh` 略有不同：它不用 `python -m http.server`，而是用 `tools/_csp_server.py` 把 `tauri.conf.json` 里那条策略**原样**下发进浏览器（页面里若有内联 `<script>` 才复刻 Tauri 的 sha256 追加，前端全外链时就没有可追加的、策略一字不改），所以测的就是配置里那条策略，两者不会漂移。它的判据是「`securitypolicyviolation` 一条都没触发，且四条路径功能仍正常」——覆盖 mermaid 渲染、mermaid PNG 导出、画板绘制、画板 PNG 导出，并把 `data:` / `blob:` 图片加载单独拆成断言，坏掉时能直接看出是哪个 scheme 没放行。
 
@@ -258,6 +258,9 @@ GitHub Actions 上跑 `node tools/verify-all.js --js`，见 `.github/workflows/v
 - **安全策略收紧**：`csp` 从 `null` 改为严格策略（`script-src 'self'`、`object-src 'none'`、`base-uri 'self'`、`form-action 'none'`）。副作用是**有意的**：桌面端彻底失去联网能力，mermaid 的 CDN 兜底在桌面端被封死。
 - **测试基建**：抽出共用断言工具 `tools/_harness.js`（含「期望断言总数」校验）；新增 `tools/verify-all.js` 一条命令跑全部回归、`tools/verify-defect.js`（210 项）、`tools/verify-csp.sh`（46 项）+ `tools/_csp_server.py`。合计 634 项断言。
 - **CI**：`.github/workflows/verify.yml` 跑 `node tools/verify-all.js --js`。
+- **实习日志：正文支持 Markdown 预览**。工具栏「预览 / 编辑」一键切换，标题 / 代码块 / 列表 / 引用 / 表格 / 链接 / 粗斜体都能渲染。渲染器**自己写**（不引第三方库），关键是**先转义再按白名单加标签** —— 日志正文常是从网页或聊天里粘来的，必须当不可信输入；链接只放行 `http/https`，挡掉 `javascript:` 这类伪协议。预览只替换「正文」，日期/标签/效率/备注照旧可改。
+- **实习日志：周报可导出 .md 与 .html**。HTML 是**自包含**的（配图内联成 data URL，换机器打开也不缺图），**Word 可直接打开**，也可以直接喂给现成的「HTML→docx」流程转成公文格式。**不生成真 .docx** —— 那要引入新依赖；而导出的 HTML 正好接得上已有流程，格式控制反而更自由。
+- 新增 `tools/verify-internlog-md.sh`（**38 项**，真机浏览器）；回归脚本总数 9 个、**672 项**断言。
 
 ### 2026-09-18
 

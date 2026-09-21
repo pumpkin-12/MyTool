@@ -46,6 +46,7 @@ registerTool({
         <button class="btn btn-primary il-add">+ 新日志</button>
         <button class="btn il-report-btn">生成周报</button>
         <button class="btn il-copy">复制全部</button>
+        <button class="btn il-preview">预览</button>
         <button class="btn il-export">导出备份</button>
         <button class="btn il-import">导入</button>
         <input type="file" class="il-file" accept=".json,application/json" hidden>
@@ -59,12 +60,17 @@ registerTool({
           <label class="hint" style="display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" class="il-rp-bytag"> 按标签分组</label>
           <button class="btn btn-sm btn-primary il-rp-gen">生成</button>
           <button class="btn btn-sm il-rp-copy">复制周报</button>
+          <button class="btn btn-sm il-rp-md">存 .md</button>
+          <button class="btn btn-sm il-rp-html">存 HTML</button>
           <button class="btn btn-sm il-rp-close">收起</button>
         </div>
         <textarea class="field il-rp-out" readonly placeholder="选好日期范围后点「生成」"></textarea>
       </div>
       <div class="il-list"></div>`;
     let logs = AppStore.get('internlog:items', []);
+    /* 预览模式：把正文的 textarea 换成 Markdown 渲染结果。
+     * 只影响「正文」—— 日期/标签/效率/备注照旧可改，读的时候也能顺手调。 */
+    let previewOn = !!AppStore.get('internlog:preview', false);
     let saveTimer = null;
     const list = el.querySelector('.il-list');
     const stat = el.querySelector('.il-stat');
@@ -224,7 +230,11 @@ registerTool({
             <button class="todo-del il-del" data-id="${l.id}">删除</button>
           </div>
           ${panel}
-          <textarea data-id="${l.id}" placeholder="今天做了什么、学到什么…">${esc(l.text)}</textarea>
+          ${previewOn
+            ? (l.text && l.text.trim()
+              ? '<div class="il-md">' + mdToHtml(l.text) + '</div>'
+              : '<div class="il-md il-md-empty">（本条还没写内容）</div>')
+            : '<textarea data-id="' + l.id + '" placeholder="今天做了什么、学到什么…">' + esc(l.text) + '</textarea>'}
           <div class="il-imgs">${imgs}</div>
           <div class="il-remarks">${remarks}</div>
           <div class="note-foot">
@@ -465,6 +475,23 @@ registerTool({
       }).join('\n\n');
       showToast(await copyText(text) ? '已复制 ' + logs.length + ' 篇日志' : '复制失败');
     });
+    /* 预览 / 编辑切换。状态存进存档，下次打开保持。
+     * 预览只把「正文」换成渲染结果，其它控件照旧可用。 */
+    const pvBtn = el.querySelector('.il-preview');
+    function syncPvBtn() {
+      pvBtn.classList.toggle('btn-primary', previewOn);
+      pvBtn.textContent = previewOn ? '编辑' : '预览';
+      pvBtn.title = previewOn
+        ? '切回编辑模式'
+        : '渲染 Markdown 预览（标题 / 代码块 / 列表 / 表格 / 链接）';
+    }
+    pvBtn.addEventListener('click', () => {
+      previewOn = !previewOn;
+      AppStore.set('internlog:preview', previewOn);
+      syncPvBtn();
+      renderList();
+    });
+    syncPvBtn();
     /* 粘贴 / 拖入加图，挂在 list 上做事件委托。
      * 粘贴只拦「带图片文件」的情况 —— 纯文本粘贴照常放行，不干扰正常输入。 */
     function imgFilesFrom(dt) {
@@ -675,28 +702,98 @@ registerTool({
       return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     }
     function genReport(from, to, byTag) {
-      const items = sorted().filter(l => l.date && l.date >= from && l.date <= to);
+      const items = itemsInRange(from, to);
       if (!items.length) return '';
-      const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
       const fmtItem = l => {
         const d = new Date(l.date + 'T00:00:00');
         const rs = (l.remarks || []).filter(r => r.text.trim());
         const mood = l.mood ? '（效率 ' + l.mood + '/5）' : '';
         const ic = (l.images || []).length;
-        return l.date + ' ' + wd[d.getDay()] + mood + '\n' + l.text.trim()
+        return l.date + ' ' + WEEKDAY[d.getDay()] + mood + '\n' + l.text.trim()
           + (ic ? '\n[附图 ' + ic + ' 张]' : '')
           + (rs.length ? '\n' + rs.map(r => '- ' + r.text.trim()).join('\n') : '');
       };
       if (!byTag) {
         return '【实习周报】' + from + ' 至 ' + to + '\n\n' + items.map(fmtItem).join('\n\n');
       }
+      const groups = groupByTag(items);
+      return '【实习周报】' + from + ' 至 ' + to + '（按标签汇总）\n\n'
+        + Object.keys(groups).map(g => '◆ ' + g + '\n' + groups[g].map(fmtItem).join('\n\n')).join('\n\n');
+    }
+
+    /* ---------- 周报导出（Markdown / HTML） ---------- */
+    const WEEKDAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    function itemsInRange(from, to) {
+      return sorted().filter(l => l.date && l.date >= from && l.date <= to);
+    }
+    function groupByTag(items) {
       const groups = {};
       items.forEach(l => {
         const g = (l.tags && l.tags[0]) || '未分类';
         (groups[g] = groups[g] || []).push(l);
       });
-      return '【实习周报】' + from + ' 至 ' + to + '（按标签汇总）\n\n'
-        + Object.keys(groups).map(g => '◆ ' + g + '\n' + groups[g].map(fmtItem).join('\n\n')).join('\n\n');
+      return groups;
+    }
+    /* 取一篇日志的配图，内联成 data URL 的 <img>。
+     * 必须内联 —— 否则导出的 HTML 换台机器打开就全是缺图。 */
+    async function imgTagsHtml(l) {
+      const names = l.images || [];
+      if (!names.length) return '';
+      const urls = await Promise.all(names.map(n => AppStore.assetGet(n).catch(() => null)));
+      const imgs = urls.filter(Boolean).map(u => '<img src="' + u + '">').join('');
+      return imgs ? '<div class="imgs">' + imgs + '</div>' : '';
+    }
+    /* 自包含 HTML 周报。
+     *   - 带 MS Office 命名空间，Word 能直接打开
+     *   - 正文用 white-space:pre-wrap 原样保留换行 —— **不做 Markdown 渲染**：
+     *     导出目标是公文式 Word，用户还要二次排版，"所见即所写"最不容易出错。
+     *     Markdown 渲染只用于应用内预览。
+     *   - ⚠️ 不生成真 .docx：那要引新依赖；而这份 HTML 正好可以喂给现成的
+     *     「HTML → docx」流程，格式控制反而更自由。 */
+    async function buildReportHtml(items, from, to, byTag) {
+      const fmtItem = async l => {
+        const d = new Date(l.date + 'T00:00:00');
+        const rs = (l.remarks || []).filter(r => r.text.trim());
+        const mood = l.mood ? '（效率 ' + l.mood + '/5）' : '';
+        return '<div class="item">'
+          + '<div class="d">' + esc(l.date) + ' ' + WEEKDAY[d.getDay()] + '<span class="mood">' + esc(mood) + '</span></div>'
+          + '<div class="body">' + esc(l.text.trim()) + '</div>'
+          + (rs.length ? '<ul class="rs">' + rs.map(r => '<li>' + esc(r.text.trim()) + '</li>').join('') + '</ul>' : '')
+          + await imgTagsHtml(l)
+          + '</div>';
+      };
+      const head = '<h1>实习周报</h1><div class="sub">' + esc(from) + ' 至 ' + esc(to) + '</div>';
+      let body;
+      if (!byTag) {
+        body = (await Promise.all(items.map(fmtItem))).join('');
+      } else {
+        const groups = groupByTag(items);
+        const parts = [];
+        for (const g of Object.keys(groups)) {
+          parts.push('<h2>' + esc(g) + '</h2>' + (await Promise.all(groups[g].map(fmtItem))).join(''));
+        }
+        body = parts.join('');
+      }
+      return '<!DOCTYPE html>\n<html lang="zh-CN" xmlns:o="urn:schemas-microsoft-com:office:office"'
+        + ' xmlns:w="urn:schemas-microsoft-com:office:word">\n<head>\n<meta charset="UTF-8">\n'
+        + '<title>实习周报 ' + esc(from) + ' 至 ' + esc(to) + '</title>\n<style>\n'
+        + '@page { size: A4; margin: 20mm 18mm; }\n'
+        + 'body { font-family: "Microsoft YaHei", system-ui, sans-serif; font-size: 11pt; line-height: 1.7; color: #1f2328; }\n'
+        + 'h1 { font-size: 16pt; text-align: center; margin: 0 0 4pt; }\n'
+        + '.sub { text-align: center; color: #666; font-size: 10pt; margin-bottom: 16pt; }\n'
+        + 'h2 { font-size: 13pt; border-bottom: 1px solid #ddd; padding-bottom: 3pt; margin: 18pt 0 8pt; }\n'
+        + '.item { margin-bottom: 12pt; }\n'
+        + '.item .d { font-weight: 600; }\n'
+        + '.item .mood { color: #666; font-size: 10pt; font-weight: normal; }\n'
+        + '.item .body { white-space: pre-wrap; margin-top: 3pt; }\n'
+        + '.rs { margin: 4pt 0 0; padding-left: 18pt; color: #444; }\n'
+        + '.imgs { margin-top: 6pt; }\n'
+        + '.imgs img { max-width: 45%; margin: 3pt 6pt 3pt 0; border: 1px solid #ddd; border-radius: 4px; }\n'
+        + '.foot { margin-top: 20pt; color: #888; font-size: 9pt; text-align: right; }\n'
+        + '</style>\n</head>\n<body>\n'
+        + head + body
+        + '<div class="foot">共 ' + items.length + ' 篇 · 由「个人工具箱」导出</div>\n'
+        + '</body>\n</html>\n';
     }
     const rpBox = el.querySelector('.il-report');
     const rpFrom = el.querySelector('.il-rp-from');
@@ -722,6 +819,27 @@ registerTool({
     el.querySelector('.il-rp-copy').addEventListener('click', async () => {
       if (!rpOut.value) { showToast('先点「生成」'); return; }
       showToast(await copyText(rpOut.value) ? '周报已复制' : '复制失败');
+    });
+    /* 存 .md：面板里那段文本原样落盘，方便再加工 */
+    el.querySelector('.il-rp-md').addEventListener('click', async () => {
+      if (!rpOut.value) { showToast('先点「生成」'); return; }
+      const blob = new Blob([rpOut.value], { type: 'text/markdown;charset=utf-8' });
+      if (await saveBlob(blob, '实习周报-' + (rpFrom.value || todayKey()) + '.md')) {
+        showToast('已存为 Markdown');
+      }
+    });
+    /* 存 HTML：自包含（配图内联成 data URL），Word 可直接打开。
+     * 不依赖「先生成」—— 直接用上面的日期范围，少一步。 */
+    el.querySelector('.il-rp-html').addEventListener('click', async () => {
+      if (!rpFrom.value || !rpTo.value) { showToast('请选择起止日期'); return; }
+      const items = itemsInRange(rpFrom.value, rpTo.value);
+      if (!items.length) { showToast('该日期范围内没有已填写日期的日志'); return; }
+      const html = await buildReportHtml(items, rpFrom.value, rpTo.value,
+        el.querySelector('.il-rp-bytag').checked);
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      if (await saveBlob(blob, '实习周报-' + rpFrom.value + '_' + rpTo.value + '.html')) {
+        showToast('已存 HTML —— 可直接用 Word 打开');
+      }
     });
     el.querySelector('.il-rp-close').addEventListener('click', () => { rpBox.hidden = true; });
     el.querySelector('.il-export').addEventListener('click', async () => {
