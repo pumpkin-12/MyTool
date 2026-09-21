@@ -31,6 +31,7 @@ const BROWSER_SCRIPTS = [
   'verify-internlog-heat.sh',
   'verify-internlog-images.sh',
   'verify-internlog-md.sh',
+  'verify-internlog-search.sh',
   'verify-csp.sh',
 ];
 

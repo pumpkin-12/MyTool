@@ -309,6 +309,19 @@ registerTool({
         <input type="file" class="il-file" accept=".json,application/json" hidden>
         <span class="hint il-stat"></span>
       </div>
+      <div class="il-search">
+        <input class="field il-s-q" placeholder="搜索正文 / 备注 / 标签…">
+        <input type="date" class="field il-s-from" title="起始日期（含）">
+        <span class="hint">至</span>
+        <input type="date" class="field il-s-to" title="结束日期（含）">
+        <span class="hint">效率</span>
+        <select class="field il-s-min"></select>
+        <span class="hint">至</span>
+        <select class="field il-s-max"></select>
+        <button class="btn btn-sm il-s-clear">清除筛选</button>
+        <span class="hint il-s-stat"></span>
+      </div>
+      <div class="il-tags il-tagfilter"></div>
       <div class="il-report" hidden>
         <div class="il-report-row">
           <input type="date" class="field il-rp-from">
@@ -328,6 +341,13 @@ registerTool({
     /* 预览模式：把正文的 textarea 换成 Markdown 渲染结果。
      * 只影响「正文」—— 日期/标签/效率/备注照旧可改，读的时候也能顺手调。 */
     let previewOn = !!AppStore.get('internlog:preview', false);
+    /* 结构化检索的筛选条件。空串 = 该维度不限。
+     * 状态存进存档（与 internlog:heat / internlog:preview 的习惯一致）——代价是
+     * "下次打开看到的是筛选后的列表"，所以界面上必须常亮提示，别让人以为数据丢了。 */
+    const EMPTY_FILTER = { q: '', tags: [], from: '', to: '', moodMin: '', moodMax: '' };
+    let filter = Object.assign({}, EMPTY_FILTER, AppStore.get('internlog:search', null) || {});
+    if (!Array.isArray(filter.tags)) filter.tags = [];
+    let tagSig = '';   // 标签集合签名：变了才重建 chips 的 DOM（否则点一下会闪）
     let saveTimer = null;
     const list = el.querySelector('.il-list');
     const stat = el.querySelector('.il-stat');
@@ -341,6 +361,86 @@ registerTool({
         return a.date < b.date ? 1 : a.date > b.date ? -1 : b.ts - a.ts;
       });
     }
+
+    /* ================= 结构化检索 =================
+     * 🔴 过滤在**数据层**做（IlCore.filterLogs），不用 DOM 隐藏 ——
+     *    后者会和 hydrateImgs() 的图片回填、.note-foot 的状态错位，
+     *    也做不出"命中 N 篇"这种统计。
+     * 🔴 检索条与标签 chips 都放在 .il-list **之外** —— 这样 renderList() 重写
+     *    list.innerHTML 不会打断输入框焦点，关键词可以即时过滤、不需要防抖。
+     *    （谁要是把它们挪进列表里，输入一个字就会失焦 —— 千万别挪。）
+     * 判定规则全在 IlCore.filterLogs 里，那边有 95 项 node 侧断言兜着。 */
+    const sQ = el.querySelector('.il-s-q');
+    const sFrom = el.querySelector('.il-s-from');
+    const sTo = el.querySelector('.il-s-to');
+    const sMin = el.querySelector('.il-s-min');
+    const sMax = el.querySelector('.il-s-max');
+    const sClear = el.querySelector('.il-s-clear');
+    const sStat = el.querySelector('.il-s-stat');
+    const tagFilterBox = el.querySelector('.il-tagfilter');
+
+    (function fillMoodSelects() {
+      const opts = '<option value="">不限</option><option value="0">未评</option>'
+        + [1, 2, 3, 4, 5].map(n => '<option value="' + n + '">' + n + '</option>').join('');
+      sMin.innerHTML = opts;
+      sMax.innerHTML = opts;
+    })();
+    (function fillFilterInputs() {
+      sQ.value = filter.q;
+      sFrom.value = filter.from;
+      sTo.value = filter.to;
+      sMin.value = filter.moodMin;
+      sMax.value = filter.moodMax;
+    })();
+
+    const activeFilter = () => !!(filter.q || filter.tags.length || filter.from
+      || filter.to || filter.moodMin !== '' || filter.moodMax !== '');
+    const visibleLogs = () => IlCore.filterLogs(sorted(), filter);
+    const saveFilter = () => AppStore.set('internlog:search', filter);
+
+    /* 标签 chips：候选用**全量** logs（它是筛选入口，不该被筛选条件缩减自己）。
+     * 用签名守卫，标签集合没变就只切 .on 类，不重建 DOM。 */
+    function syncTagFilter() {
+      const tags = IlCore.allTags(logs);
+      const sig = tags.map(t => t.name + '\u0001' + t.count).join('\u0002');
+      if (sig === tagSig) {
+        tagFilterBox.querySelectorAll('[data-ftag]').forEach(b =>
+          b.classList.toggle('on', filter.tags.indexOf(b.dataset.ftag) >= 0));
+        return;
+      }
+      tagSig = sig;
+      tagFilterBox.innerHTML = tags.length
+        ? tags.map(t => '<button class="il-tag' + (filter.tags.indexOf(t.name) >= 0 ? ' on' : '')
+            + '" data-ftag="' + esc(t.name) + '" title="点击切换；选多个是「同时满足」">'
+            + esc(t.name) + '<em>' + t.count + '</em></button>').join('')
+        : '<span class="hint">还没有标签</span>';
+    }
+
+    /* 筛选条件变化统一走这里 */
+    function applyFilter(mutate) {
+      mutate();
+      /* 🔴 标签面板指向的那条日志可能已被筛掉，不清状态会"幽灵出现" */
+      tagPanelId = null;
+      saveFilter();
+      renderList();
+    }
+    sQ.addEventListener('input', () => applyFilter(() => { filter.q = sQ.value; }));
+    sFrom.addEventListener('change', () => applyFilter(() => { filter.from = sFrom.value; }));
+    sTo.addEventListener('change', () => applyFilter(() => { filter.to = sTo.value; }));
+    sMin.addEventListener('change', () => applyFilter(() => { filter.moodMin = sMin.value; }));
+    sMax.addEventListener('change', () => applyFilter(() => { filter.moodMax = sMax.value; }));
+    sClear.addEventListener('click', () => applyFilter(() => {
+      Object.assign(filter, EMPTY_FILTER, { tags: [] });
+      sQ.value = ''; sFrom.value = ''; sTo.value = ''; sMin.value = ''; sMax.value = '';
+    }));
+    tagFilterBox.addEventListener('click', e => {
+      const b = e.target.closest('[data-ftag]');
+      if (!b) return;
+      applyFilter(() => {
+        const i = filter.tags.indexOf(b.dataset.ftag);
+        if (i >= 0) filter.tags.splice(i, 1); else filter.tags.push(b.dataset.ftag);
+      });
+    });
     /* ---------- 日志配图 ----------
      * 复用 AppStore 的资产机制，与画板同一套：内容哈希去重、存 data/assets/。
      * ⚠️ 画板那套 assetUrls / imgSrcOf 在 sketch 模块的闭包里，这里拿不到，
@@ -457,8 +557,18 @@ registerTool({
     });
 
     function renderList() {
-      stat.textContent = logs.length ? '共 ' + logs.length + ' 篇' : '';
-      list.innerHTML = sorted().map(l => {
+      /* 过滤在数据层做；热力图 renderHeat() 继续用**全量** logs ——
+       * 它是「贡献度总览」，跟着筛选抖会把跨年视图缩成零星几天。 */
+      const all = sorted();
+      const vis = activeFilter() ? IlCore.filterLogs(all, filter) : all;
+      stat.textContent = all.length
+        ? (activeFilter() ? '显示 ' + vis.length + ' / 共 ' + all.length + ' 篇'
+                          : '共 ' + all.length + ' 篇')
+        : '';
+      sStat.textContent = activeFilter() ? '筛选已生效' : '';
+      sClear.classList.toggle('btn-primary', activeFilter());
+      syncTagFilter();
+      list.innerHTML = vis.map(l => {
         const remarks = (l.remarks || []).map(r => `
           <div class="il-remark">
             <span class="dot"></span>
@@ -502,7 +612,9 @@ registerTool({
             <span>${new Date(l.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
           </div>
         </div>`;
-      }).join('') || '<div class="empty">还没有日志，点「新日志」开始记录（日期可留空稍后选）</div>';
+      }).join('') || (activeFilter()
+        ? '<div class="empty">没有符合筛选条件的日志（共 ' + all.length + ' 篇）</div>'
+        : '<div class="empty">还没有日志，点「新日志」开始记录（日期可留空稍后选）</div>');
       renderHeat();
       hydrateImgs();
     }

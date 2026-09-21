@@ -138,6 +138,16 @@
   .il-img-wrap:hover .il-img-del { opacity: 1; }
   .il-img-del:hover { color: var(--err); border-color: var(--err); }
   .il-drop { outline: 2px dashed var(--accent); outline-offset: 3px; }
+  /* 结构化检索条 + 标签筛选 chips。
+   * ⚠️ 这两块**必须在 .il-list 之外** —— renderList() 会重写 .il-list 的 innerHTML，
+   *    放进去输入一个字就失焦（见 internlog.js 里的注释）。 */
+  .il-search { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .il-search .field { padding: 4px 8px; font-size: 13px; }
+  .il-search .il-s-q { flex: 1 1 200px; min-width: 150px; }
+  .il-search .il-s-from, .il-search .il-s-to { width: 142px; }
+  .il-search .il-s-min, .il-search .il-s-max { width: 76px; }
+  .il-tagfilter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .il-tagfilter .il-tag em { font-style: normal; opacity: .6; margin-left: 4px; font-size: 11px; }
   /* Markdown 预览（internlog「预览」开关）。用了主题变量，深浅色都跟得上 */
   .il-md { font-size: 13px; line-height: 1.75; color: var(--text); word-break: break-word; }
   .il-md-empty { color: var(--muted); font-style: italic; }
