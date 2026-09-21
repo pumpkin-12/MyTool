@@ -267,6 +267,36 @@ registerTool({
   icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M8 3.5v3"/><path d="M16 3.5v3"/><path d="M4 10h16"/><path d="M8.5 14.5h7"/><path d="M8.5 17h4"/></svg>',
   mount(el) {
     el.innerHTML = `
+      <div class="row">
+        <button class="btn btn-primary il-add">+ 新日志</button>
+        <button class="btn il-report-btn">生成周报</button>
+        <button class="btn il-copy">复制全部</button>
+        <button class="btn il-preview">预览</button>
+        <button class="btn il-xlsx">导出 Excel</button>
+        <button class="btn il-export">导出备份</button>
+        <button class="btn il-import">导入</button>
+        <input type="file" class="il-file" accept=".json,application/json" hidden>
+        <span class="hint il-stat"></span>
+      </div>
+      <div class="il-search">
+        <input class="field il-s-q" placeholder="搜索正文 / 备注 / 标签…">
+        <input type="date" class="field il-s-from" title="起始日期（含）">
+        <span class="hint">至</span>
+        <input type="date" class="field il-s-to" title="结束日期（含）">
+        <span class="hint">效率</span>
+        <select class="field il-s-min"></select>
+        <span class="hint">至</span>
+        <select class="field il-s-max"></select>
+        <button class="btn btn-sm il-s-clear">清除筛选</button>
+        <span class="hint il-s-stat"></span>
+        <span class="il-tags il-tagfilter"></span>
+      </div>
+      <div class="il-statbox">
+        <button class="il-stat-head" type="button" title="展开 / 收起统计图">
+          <span class="il-stat-caret">▸</span>
+          <span class="il-stat-sum">统计</span>
+        </button>
+        <div class="il-stat-body" hidden>
       <div class="il-heat">
         <div class="il-heat-head">
           <span class="il-heat-title">贡献度 · 按效率上色</span>
@@ -305,30 +335,8 @@ registerTool({
         </div>
         <div class="il-trend-box"></div>
       </div>
-      <div class="row">
-        <button class="btn btn-primary il-add">+ 新日志</button>
-        <button class="btn il-report-btn">生成周报</button>
-        <button class="btn il-copy">复制全部</button>
-        <button class="btn il-preview">预览</button>
-        <button class="btn il-xlsx">导出 Excel</button>
-        <button class="btn il-export">导出备份</button>
-        <button class="btn il-import">导入</button>
-        <input type="file" class="il-file" accept=".json,application/json" hidden>
-        <span class="hint il-stat"></span>
+        </div>
       </div>
-      <div class="il-search">
-        <input class="field il-s-q" placeholder="搜索正文 / 备注 / 标签…">
-        <input type="date" class="field il-s-from" title="起始日期（含）">
-        <span class="hint">至</span>
-        <input type="date" class="field il-s-to" title="结束日期（含）">
-        <span class="hint">效率</span>
-        <select class="field il-s-min"></select>
-        <span class="hint">至</span>
-        <select class="field il-s-max"></select>
-        <button class="btn btn-sm il-s-clear">清除筛选</button>
-        <span class="hint il-s-stat"></span>
-      </div>
-      <div class="il-tags il-tagfilter"></div>
       <div class="il-report" hidden>
         <div class="il-report-row">
           <input type="date" class="field il-rp-from">
@@ -450,6 +458,32 @@ registerTool({
         if (i >= 0) filter.tags.splice(i, 1); else filter.tags.push(b.dataset.ftag);
       });
     });
+
+    /* ---------- 统计区折叠 ----------
+     * 热力图 209px + 趋势图 234px = 443px，是页面上最占地方的两块（真机实测）。
+     * 默认**折叠**，把「+ 新日志」和日志列表拉回第一屏 ——
+     * 折叠标题里带上关键数字（已写 N 篇 / 平均效率），不展开也能看到概况，
+     * 否则"收了之后就忘了有热力图"。
+     * 状态存 internlog:statOpen，与 internlog:heat / internlog:preview 一个习惯。 */
+    const statHead = el.querySelector('.il-stat-head');
+    const statBody = el.querySelector('.il-stat-body');
+    const statCaret = el.querySelector('.il-stat-caret');
+    const statSum = el.querySelector('.il-stat-sum');
+    let statOpen = !!AppStore.get('internlog:statOpen', false);
+    function syncStat() {
+      if (!statBody) return;
+      statBody.hidden = !statOpen;
+      statCaret.textContent = statOpen ? '▾' : '▸';
+      statHead.setAttribute('aria-expanded', statOpen ? 'true' : 'false');
+    }
+    if (statHead) {
+      statHead.addEventListener('click', () => {
+        statOpen = !statOpen;
+        AppStore.set('internlog:statOpen', statOpen);
+        syncStat();
+      });
+      syncStat();
+    }
     /* ---------- 日志配图 ----------
      * 复用 AppStore 的资产机制，与画板同一套：内容哈希去重、存 data/assets/。
      * ⚠️ 画板那套 assetUrls / imgSrcOf 在 sketch 模块的闭包里，这里拿不到，
@@ -853,6 +887,8 @@ registerTool({
       const nowKey = fmtDate(now);
       if (streak > 0 && nowKey >= fromKey && nowKey <= toKey) statText += ' · 连续 ' + streak + ' 天';
       if (statEl) statEl.textContent = statText;
+      /* 折叠标题上也放一份关键数字 —— 不展开就知道这周写了多少 */
+      if (statSum) statSum.textContent = '统计 · ' + statText.trim();
       syncHeatRangeUI();
       fillYearSelect();
       /* 趋势图复用热力图这一档的区间（fromKey/toKey 是用户选的精确端点，不是外扩过的）。

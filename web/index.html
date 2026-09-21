@@ -14,6 +14,23 @@
     --accent: #2563eb;
     --ok: #0F6E56;
     --err: #A32D2D;
+
+    /* ---------- 几何体系（2026-09-21 加）----------
+     * 加之前：padding 用了 41 种取值、margin 34 种、font-size 14 种
+     * （含 12.5px 这种硬插一档）、border-radius 11 种、gap 11 种。
+     * 这里定的是**目标**，不是"立刻全量替换" —— 350 条规则一次性换没法保证
+     * 不出视觉回归。约定：新写的一律用 token，旧的在顺手改到时替换。 */
+    --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
+    --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+
+    --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px;
+    --fs-lg: 15px; --fs-xl: 18px; --fs-2xl: 24px;
+
+    --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-full: 999px;
+
+    /* 原来有三种几乎一样的阴影（rgba(0,0,0,.1/.12/.14)），合并成两档 */
+    --sh-1: 0 1px 2px rgba(0, 0, 0, .08);
+    --sh-2: 0 4px 12px rgba(0, 0, 0, .12);
   }
   :root.dark {
     --bg: #16181c;
@@ -30,6 +47,22 @@
    * 「只在自定义区间时显示」变成「一直显示」—— 2026-09-16 用户截图才发现。
    * 这条兜底保证 hidden 永远算数，别再逐个元素去补。 */
   [hidden] { display: none !important; }
+  /* ---------- 统一焦点环（2026-09-21）----------
+   * 加之前全站只有 4 处 :focus，而且是两种写法（.field 用 border-color、
+   * .cell 用 box-shadow），Tab 走一圈看不出焦点在哪。
+   * 用 :focus-visible 而不是 :focus —— **鼠标点击不亮环、键盘 Tab 才亮**，
+   * 既补了可达性又不给鼠标用户添噪。一处生效，替掉那些各写各的。 */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--r-sm);
+  }
+  /* 输入类自带边框，再加 outline 会太吵，改成描边加重 */
+  :where(input, select, textarea):focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .15);
+  }
   body {
     margin: 0;
     font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -146,8 +179,25 @@
   .il-search .il-s-q { flex: 1 1 200px; min-width: 150px; }
   .il-search .il-s-from, .il-search .il-s-to { width: 142px; }
   .il-search .il-s-min, .il-search .il-s-max { width: 76px; }
-  .il-tagfilter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .il-tagfilter { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .il-tagfilter .il-tag em { font-style: normal; opacity: .6; margin-left: 4px; font-size: 11px; }
+  /* ---------- 统计区：可折叠，默认收起 ----------
+   * 热力图 209 + 趋势图 234 = 443px 是页面上最占地方的两块（真机实测），
+   * 收起后只占一行，把「+ 新日志」和日志列表拉回第一屏。
+   * 标题栏带关键数字（renderHeat 会把 statText 同步进来），
+   * 不展开也能看到"这周写了多少"—— 否则收了就忘了有热力图。 */
+  .il-statbox { margin-bottom: 10px; }
+  .il-stat-head {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 6px 10px; font: inherit; font-size: var(--fs-sm);
+    color: var(--muted); text-align: left; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-md);
+  }
+  .il-stat-head:hover { color: var(--text); border-color: var(--accent); }
+  .il-stat-caret { flex: 0 0 auto; font-size: var(--fs-xs); }
+  .il-stat-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .il-stat-body { margin-top: 10px; }
   /* 效率趋势（手写 SVG）。颜色**全部走 CSS 类 + 主题变量**，
    * 所以深浅色主题自动跟随，不需要监听主题变化重绘 —— 这是选 SVG 不选 canvas 的主因。 */
   .il-trend { margin-bottom: 12px; }

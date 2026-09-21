@@ -9,14 +9,14 @@
 #    list.innerHTML 不会打断输入焦点**。这条一旦被破坏（有人把检索框挪进列表里），
 #    用户每敲一个字就失焦 —— 属于"能用但极难用"的退化，必须钉住。
 #
-# 覆盖 67 项断言（检索 32 · 趋势 15 · 缺失周报 20）。用法: bash tools/verify-internlog-search.sh
+# 覆盖 78 项断言（检索 32 · 趋势 15 · 缺失周报 20 · 首屏可见性 11）。用法: bash tools/verify-internlog-search.sh
 # 报告: .workbuddy/_search.txt
 set -u
 
 export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
 
 REPORT=".workbuddy/_search.txt"
-EXPECTED=67
+EXPECTED=78
 PORT=8913
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ" || exit 1
@@ -52,6 +52,7 @@ SEED="$(cat <<'EOF'
   localStorage.setItem('toolbox:internlog:items', JSON.stringify(items));
   localStorage.removeItem('toolbox:internlog:search');
   localStorage.removeItem('toolbox:internlog:preview');
+  localStorage.removeItem('toolbox:internlog:statOpen');
   localStorage.setItem('toolbox:internlog:heat', JSON.stringify({ mode: '6m' }));
   return 'seeded';
 })()
@@ -384,6 +385,64 @@ ASSERT_C4="$(cat <<'EOF'
 EOF
 )"
 
+# ---------- D 首屏可见性（防"家具又堆回去"） ----------
+# 🔴 这一段的由来：2026-09-21 实测发现日志列表顶部被挤到 1001px（视口才 568px），
+#    主操作「+ 新日志」也在首屏之外 —— 因为前几批陆续加了 4 块家具，每块单独看
+#    都合理，但没人管整体层级。重排之后列表顶回到 234px。
+#    **这里把"布局目标"变成断言**，否则下次再加一块家具又会慢慢挤回去。
+ASSERT_D="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var q = function (s) { return document.querySelector(s); };
+  var vh = window.innerHeight;
+  var top = function (s) { var e = q(s); return e ? e.getBoundingClientRect().top + window.scrollY : 1e9; };
+  var hgt = function (s) { var e = q(s); return e ? e.getBoundingClientRect().height : -1; };
+
+  var addBtn = q('.il-add');
+  ok('🔴「+ 新日志」整体在首屏内（底部 ≤ 视口高 ' + vh + '）',
+    !!addBtn && addBtn.getBoundingClientRect().bottom <= vh);
+  ok('🔴 日志列表顶部在首屏内', top('.il-list') <= vh);
+
+  var visible = 0;
+  document.querySelectorAll('.il-list .note-card').forEach(function (c) {
+    if (c.getBoundingClientRect().top < vh) visible++;
+  });
+  ok('🔴 第一屏至少能看到 1 条日志（实际 ' + visible + ' 条）', visible >= 1);
+
+  /* 绝对预算：与视口无关，防"家具再堆回来" */
+  ok('统计区默认折叠后 ≤ 60px（实际 ' + hgt('.il-statbox') + 'px）', hgt('.il-statbox') <= 60);
+  ok('列表顶 ≤ 400px（实际 ' + top('.il-list') + 'px）', top('.il-list') <= 400);
+  ok('统计区默认是收起的', getComputedStyle(q('.il-stat-body')).display === 'none');
+  ok('折叠标题带关键数字（不展开也能看到概况）',
+    /统计 · .*已写 \d+ 篇/.test((q('.il-stat-sum') || {}).textContent || ''));
+  ok('折叠头有无障碍标注 aria-expanded=false',
+    q('.il-stat-head').getAttribute('aria-expanded') === 'false');
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+ACT_D_OPEN="(function(){document.querySelector('.il-stat-head').click();return 'opened';})()"
+
+ASSERT_D2="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var q = function (s) { return document.querySelector(s); };
+  ok('点开后统计区真的展开（高度 > 300px）',
+    q('.il-statbox').getBoundingClientRect().height > 300);
+  ok('热力图随之可见', getComputedStyle(q('.il-stat-body')).display !== 'none');
+  ok('aria-expanded 跟着变 true', q('.il-stat-head').getAttribute('aria-expanded') === 'true');
+  var saved = '';
+  try { saved = localStorage.getItem('toolbox:internlog:statOpen') || ''; } catch (e) {}
+  return JSON.stringify({ 通过: pass, 失败: fail, 存档: saved });
+})()
+EOF
+)"
+
+ACT_D_CLOSE="(function(){document.querySelector('.il-stat-head').click();return 'closed';})()"
+
 run() {
   echo "exe : $AB"
   echo "url : $URL"
@@ -427,12 +486,16 @@ run() {
   step "C3. 导出后自动打标记" "$ASSERT_C3";        RC3="$LAST"
   "$AB" eval "$ACT_C_CLEAR" >/dev/null; sleep 2
   step "C4. 清除标记（走 askConfirm）" "$ASSERT_C4"; RC4="$LAST"
+  step "D1. 首屏可见性（防家具堆回去）" "$ASSERT_D"; RD1="$LAST"
+  "$AB" eval "$ACT_D_OPEN" >/dev/null; sleep 2
+  step "D2. 统计区可展开" "$ASSERT_D2"; RD2="$LAST"
+  "$AB" eval "$ACT_D_CLOSE" >/dev/null; sleep 1
 
   echo ""
   echo "================= 汇总 ================="
   local NP=0 NF=0
   for pair in "A0:$RA0" "A1:$RA1" "A2:$RA2" "A3:$RA3" "A4:$RA4" "A5:$RA5" "A6b:$RA6" \
-              "B1:$RB1" "B2:$RB2" "B3:$RB3" "C1:$RC1" "C2:$RC2" "C3:$RC3" "C4:$RC4"; do
+              "B1:$RB1" "B2:$RB2" "B3:$RB3" "C1:$RC1" "C2:$RC2" "C3:$RC3" "C4:$RC4" "D1:$RD1" "D2:$RD2"; do
     local n="${pair%%:*}" v="${pair#*:}"
     if printf '%s' "$v" | grep -qF '失败\":[]'; then
       local p; p=$(printf '%s' "$v" | sed -n 's/.*通过\\":\([0-9]\{1,\}\).*/\1/p')
