@@ -303,6 +303,7 @@ registerTool({
         <button class="btn il-report-btn">生成周报</button>
         <button class="btn il-copy">复制全部</button>
         <button class="btn il-preview">预览</button>
+        <button class="btn il-xlsx">导出 Excel</button>
         <button class="btn il-export">导出备份</button>
         <button class="btn il-import">导入</button>
         <input type="file" class="il-file" accept=".json,application/json" hidden>
@@ -1098,6 +1099,34 @@ registerTool({
       }
     });
     el.querySelector('.il-rp-close').addEventListener('click', () => { rpBox.hidden = true; });
+    /* 导出 Excel 台账。
+     * 数据源用 sorted()（**全部日志**）—— 与 JSON 备份口径一致，不受检索筛选影响。
+     * 二维数组由 IlCore.ledgerRows 拼（8 列，标签/备注已 join 成字符串，
+     * 效率未评留空串而不是 0），那边有 node 侧断言兜着。 */
+    el.querySelector('.il-xlsx').addEventListener('click', () => {
+      if (!logs.length) { showToast('还没有日志可导出'); return; }
+      const rows = IlCore.ledgerRows(sorted());
+      loadXlsx().then(XLSX => {
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        ws['!cols'] = [{ wch: 5 }, { wch: 12 }, { wch: 6 }, { wch: 10 },
+                       { wch: 16 }, { wch: 60 }, { wch: 30 }, { wch: 8 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '日志台账');
+        const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([wbout], { type: 'application/octet-stream' });
+        const nImg = logs.reduce((a, l) => a + ((l.images || []).length), 0);
+        return saveBlob(blob, '实习日志台账-' + fmtDate(new Date()) + '.xlsx').then(ok => {
+          if (ok) {
+            /* 图片本身不进表格（与 JSON 备份一致）。不说清会以为"图丢了"—— 如实提示 */
+            showToast(nImg
+              ? '台账已导出 ' + (rows.length - 1) + ' 行（' + nImg + ' 张配图不在表内）'
+              : '台账已导出 ' + (rows.length - 1) + ' 行');
+          }
+        });
+      /* 🔴 这个 catch 不能省：loadXlsx() 加载 vendor 失败会 reject，
+       *    漏了就是"点了没反应"，用户会以为按钮坏了。 */
+      }).catch(e => showToast(e.message));
+    });
     el.querySelector('.il-export').addEventListener('click', async () => {
       if (!logs.length) { showToast('还没有日志可导出'); return; }
       const data = { app: 'toolbox', type: 'internlog', exportedAt: new Date().toISOString(), count: logs.length, items: logs };

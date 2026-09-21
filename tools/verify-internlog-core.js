@@ -11,7 +11,7 @@
 const H = require('./_harness');
 
 const html = H.readFrontend();
-const R = H.makeReport({ name: 'internlog-core', expected: 95 });
+const R = H.makeReport({ name: 'internlog-core', expected: 108 });
 const { log, ok } = R;
 const vm = H.vm;
 
@@ -203,6 +203,51 @@ ok(I.weeksOf(LOGS, '2026-08-31', '2026-09-13', '2026-09-21', [])
   .every(w => w.monday >= I.weekStartOf('2026-08-31')), '每周以周一为键');
 ok(I.missingWeeks(LOGS, '2026-09-14', '2026-09-20', '2026-09-21', []).length === 0,
   '空周不算缺失（没有日志就没什么可生成）');
+
+/* ---------------- [7] xlsx 台账：真的生成一遍再回读 ----------------
+ * 这一段的思路值得记：**vendor 的 xlsx.full.min.js 是 UMD 包，Node 里能直接 require**，
+ * 所以"台账到底能不能生成合法的 xlsx"根本不用开浏览器 —— 用与 handler 里完全一样的
+ * 五步法生成 → 校验 ZIP 魔数 → 用 XLSX.read 回读 → 逐格比对。
+ * 比"查源码里有没有那行代码"强得多，也不占用真机脚本那一轮 4 分钟。 */
+log('');
+log('================= [7] xlsx 台账：真实生成 + 回读 =================');
+
+let XLSX;
+try {
+  XLSX = require('../web/vendor/xlsx.full.min.js');
+} catch (err) {
+  /* 抽不到被测对象就 throw —— 与 extractByMarker 同一策略，不降级成"记条 FAIL 继续跑" */
+  throw new Error('vendor/xlsx.full.min.js 加载失败，无法验证台账生成：' + err.message);
+}
+ok(!!XLSX && typeof XLSX.utils.aoa_to_sheet === 'function', 'vendor xlsx 加载成功且 API 可用');
+
+const ws = XLSX.utils.aoa_to_sheet(I.ledgerRows(LOGS));
+ws['!cols'] = [{ wch: 5 }, { wch: 12 }, { wch: 6 }, { wch: 10 },
+               { wch: 16 }, { wch: 60 }, { wch: 30 }, { wch: 8 }];
+const wb = XLSX.utils.book_new();
+XLSX.utils.book_append_sheet(wb, ws, '日志台账');
+const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+const buf = Buffer.from(wbout);
+
+ok(buf.length > 1000, '导出的字节数合理（>1 KB）');
+ok(buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04,
+  '🔴 是合法 xlsx（ZIP 魔数 PK\\x03\\x04）—— 证明写盘格式没错');
+
+const wb2 = XLSX.read(buf, { type: 'buffer' });
+ok(wb2.SheetNames[0] === '日志台账', '回读 sheet 名 = 日志台账');
+const back = XLSX.utils.sheet_to_json(wb2.Sheets['日志台账'], { header: 1, defval: '' });
+ok(back.length === 7, '回读行数 = 7（表头 + 6 篇）');
+ok(back[0][0] === '序号' && back[0][7] === '图片数', '回读表头正确');
+ok(back[1][3] === 5, '已评效率回读为数字');
+ok(String(back[4][3]) === '' && String(back[6][3]) === '',
+  '🔴 未评效率回读为空（不是 0）—— 这条只有真跑一遍才验得出');
+ok(back[3][4] === '开发、会议', '多标签回读 = 开发、会议');
+ok(back[1][6] === '- 查了手册', '备注回读带「- 」前缀');
+ok(String(back[4][1]) === '' && String(back[4][2]) === '',
+  '无日期那行，日期与星期列回读都为空');
+ok(back[1][7] === 2, '图片数列回读 = 2');
+ok(JSON.stringify(back).indexOf('[object') < 0,
+  '🔴 全表无 [object Object]（数组若直接进 aoa 就会这样）');
 
 log('');
 R.finish();
