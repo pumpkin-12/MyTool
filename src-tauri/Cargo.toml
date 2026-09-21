@@ -26,6 +26,21 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 
+# AI 功能的 HTTP 客户端。
+# 🔴 必须 `default-features = false` 并显式选 native-tls：
+#    reqwest 0.13 的 `default-tls = ["rustls"]`，而 rustls 走 aws-lc-rs，
+#    在 Windows 上需要 cmake + NASM（本机都没有）→ **保留 default 会编不过**。
+#    native-tls 在 Windows 上走 schannel（纯 Rust FFI），不需要 C 工具链。
+# ⚠️ 这是整个项目里**唯一需要联网下载新 crate** 的地方
+#    （native-tls / schannel / hyper-tls / tokio-native-tls 等 4~6 个包），Cargo.lock 会变。
+# system-proxy：让 reqwest 尊重系统代理（纯 Rust，代价为零）。国内访问外部 API
+#    常真的依赖系统代理，留着更稳。
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "native-tls",
+  "system-proxy",
+] }
+
 # 系统状态模块用到的 Win32 API。这个包本来就作为传递依赖躺在 Cargo.lock 里，
 # 显式声明只是为了能在代码里 `use` 它 —— 不会产生新的下载（只需编一次，无 proc-macro）。
 # 只勾选实际用到的 feature，其余 217 个 Win32_* 都不参与编译。

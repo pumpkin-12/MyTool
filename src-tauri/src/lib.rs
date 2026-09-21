@@ -65,11 +65,16 @@ const BACKUP_INTERVAL: Duration = Duration::from_secs(1800);
 #[derive(Default)]
 struct BackupGate(Mutex<Option<Instant>>);
 
+/// AI 功能（配置读写 + 非流式对话）。单独成文件，不让 lib.rs 继续变大。
+mod ai;
+
 /// 用户指定的数据目录（不放系统盘）。放在项目目录下的 data/ 子文件夹，
 /// 便于整体备份、不与源码混在一起。
 /// 若要改位置，只改这里即可（注意：改后旧数据不会自动出现在新目录，
 /// 除非保留下方 migrate_legacy 的迁移逻辑，或手动搬移）。
-const DATA_DIR: &str = "D:\\Ai-file\\MyTool\\data";
+/// `pub(crate)` 是给 `ai` 模块用的 —— 它把 Key 写到 `DATA_DIR/ai/` 下
+/// （AppStore 不管那个目录，所以 `exportAll` 物理上碰不到密钥）。
+pub(crate) const DATA_DIR: &str = "D:\\Ai-file\\MyTool\\data";
 
 /// 解析存档路径，顺便保证目录存在。
 fn store_path() -> Result<PathBuf, String> {
@@ -941,7 +946,10 @@ pub fn run() {
             save_file,
             sysinfo,
             dir_usage,
-            store_stats
+            store_stats,
+            ai::ai_config_set,
+            ai::ai_config_get,
+            ai::ai_chat
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
