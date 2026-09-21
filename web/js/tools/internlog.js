@@ -341,6 +341,7 @@ registerTool({
           <button class="btn btn-sm il-rp-html">存 HTML</button>
           <button class="btn btn-sm il-rp-close">收起</button>
         </div>
+        <div class="il-rp-miss hint"></div>
         <textarea class="field il-rp-out" readonly placeholder="选好日期范围后点「生成」"></textarea>
       </div>
       <div class="il-list"></div>`;
@@ -1253,6 +1254,100 @@ registerTool({
     const rpFrom = el.querySelector('.il-rp-from');
     const rpTo = el.querySelector('.il-rp-to');
     const rpOut = el.querySelector('.il-rp-out');
+
+    /* ================= 缺失周报（只存周标记，不存正文） =================
+     * 只记「哪一周已经处理过」（`internlog:reported` = 周一日期数组），**不存报告正文**：
+     *   · 正文可由 genReport() 确定性重生成，存它是冗余
+     *   · 存正文会让「导出全部数据」体积随周数线性增长 —— 同一份内容备份两遍
+     *   · 更要命的是**正文会过期**：补写日志之后，存档里的旧周报和新生成的
+     *     不一致，反而误导。其实只有"这周处理过没有"这一个布尔问题需要答案。
+     * 判定逻辑在 IlCore.weeksOf / missingWeeks（步 1 已有 node 侧断言）。 */
+    let reported = AppStore.get('internlog:reported', []);
+    if (!Array.isArray(reported)) reported = [];
+    const saveReported = () => AppStore.set('internlog:reported', reported);
+
+    /* 把 [from, to] 覆盖到的自然周全部登记为已处理 —— 只在**真正产出**后调用 */
+    function markReported(from, to) {
+      if (!from || !to) return 0;
+      const ws = IlCore.weeksOf(logs, from, to, todayKey(), []);
+      let n = 0;
+      ws.forEach(w => { if (reported.indexOf(w.monday) < 0) { reported.push(w.monday); n++; } });
+      if (n) saveReported();
+      return n;
+    }
+
+    const missBox = el.querySelector('.il-rp-miss');
+    function renderMissHint() {
+      if (!missBox) return;
+      if (!rpFrom.value || !rpTo.value) { missBox.textContent = ''; return; }
+      const all = IlCore.weeksOf(logs, rpFrom.value, rpTo.value, todayKey(), reported);
+      if (!all.length) { missBox.textContent = ''; return; }
+      const miss = all.filter(w => w.count > 0 && !w.done);
+      const noDate = logs.filter(l => !l.date).length;
+      const tail = noDate ? '；另有 ' + noDate + ' 篇未填日期，不进周报' : '';
+      /* 🔴 按钮要按状态给，而且「清除全部标记」在**已全部处理完**时也得留 ——
+       * 否则标记完之后按钮消失，用户再也没有入口清除标记了
+       * （这正是真机测试抓出来的：C4 段点不到 .il-miss-clear）。 */
+      const btns = '<span class="il-miss-btns">'
+        + (miss.length
+          ? '<button class="btn btn-sm il-miss-export">补齐并导出</button>'
+            + '<button class="btn btn-sm il-miss-mark">标记为已处理</button>'
+          : '')
+        + (reported.length ? '<button class="btn btn-sm il-miss-clear">清除全部标记</button>' : '')
+        + '</span>';
+      if (!miss.length) {
+        missBox.innerHTML = esc('✓ 范围内 ' + all.length + ' 个自然周都已处理过' + tail) + btns;
+        return;
+      }
+      missBox.innerHTML = '⚠ 范围内共 ' + all.length + ' 个自然周，其中 <b>' + miss.length
+        + '</b> 周还没生成过周报（' + esc(miss.map(w => w.monday.slice(5)).join('、')) + '）'
+        + esc(tail) + btns;
+    }
+
+    /* 补齐并导出：缺失的周各自生成周报，合并成**一个** .md。
+     * 合并而不是一周一个文件 —— saveBlob 一次只弹一个保存框，
+     * 「补 3 周弹 3 次保存框」是糟糕体验。每段前加 `## 周一 ~ 周日`，段间 `---`。 */
+    async function exportMissing() {
+      if (!rpFrom.value || !rpTo.value) { showToast('请选择起止日期'); return; }
+      const miss = IlCore.missingWeeks(logs, rpFrom.value, rpTo.value, todayKey(), reported);
+      if (!miss.length) { showToast('范围内没有需要补的周'); return; }
+      const byTag = el.querySelector('.il-rp-bytag').checked;
+      const parts = miss.map(w => '## ' + w.monday + ' ~ ' + w.sunday + '\n\n'
+        + (genReport(w.monday, w.sunday, byTag) || '（这一周没有已填写日期的日志）'));
+      const text = '# 实习周报（补齐 ' + miss.length + ' 周）\n\n' + parts.join('\n\n---\n\n') + '\n';
+      const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+      if (await saveBlob(blob, '实习周报-补齐-' + rpFrom.value + '_' + rpTo.value + '.md')) {
+        markReported(rpFrom.value, rpTo.value);
+        renderMissHint();
+        showToast('已补齐 ' + miss.length + ' 周');
+      }
+    }
+
+    if (missBox) {
+      missBox.addEventListener('click', async e => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        if (b.classList.contains('il-miss-export')) {
+          await exportMissing();
+        } else if (b.classList.contains('il-miss-mark')) {
+          const n = markReported(rpFrom.value, rpTo.value);
+          showToast(n ? '已标记 ' + n + ' 个自然周' : '这些周本来就标记过了');
+          renderMissHint();
+        } else if (b.classList.contains('il-miss-clear')) {
+          if (!reported.length) { showToast('本来就没有标记'); return; }
+          const cnt = reported.length;
+          /* 删除类操作走 askConfirm —— 项目约定不用 window.confirm（桌面端是 no-op） */
+          if (!await askConfirm('清除全部「已处理」标记（共 ' + cnt + ' 个）？\n周报内容不受影响，只是重新显示缺失提示。', '清除')) return;
+          reported = [];
+          saveReported();
+          renderMissHint();
+          showToast('已清除 ' + cnt + ' 个标记');
+        }
+      });
+    }
+    /* 改日期范围要立刻重算缺失提示（不需要点「生成」） */
+    rpFrom.addEventListener('change', renderMissHint);
+    rpTo.addEventListener('change', renderMissHint);
     el.querySelector('.il-report-btn').addEventListener('click', () => {
       if (rpBox.hidden) {
         const now2 = new Date();
@@ -1264,6 +1359,7 @@ registerTool({
         rpOut.value = '';
       }
       rpBox.hidden = !rpBox.hidden;
+      if (!rpBox.hidden) renderMissHint();
     });
     el.querySelector('.il-rp-gen').addEventListener('click', () => {
       if (!rpFrom.value || !rpTo.value) { showToast('请选择起止日期'); return; }
@@ -1272,13 +1368,18 @@ registerTool({
     });
     el.querySelector('.il-rp-copy').addEventListener('click', async () => {
       if (!rpOut.value) { showToast('先点「生成」'); return; }
-      showToast(await copyText(rpOut.value) ? '周报已复制' : '复制失败');
+      const okCopy = await copyText(rpOut.value);
+      showToast(okCopy ? '周报已复制' : '复制失败');
+      /* 复制成功也算「这一周处理过了」—— 用户可能粘到别处去了 */
+      if (okCopy && markReported(rpFrom.value, rpTo.value)) renderMissHint();
     });
     /* 存 .md：面板里那段文本原样落盘，方便再加工 */
     el.querySelector('.il-rp-md').addEventListener('click', async () => {
       if (!rpOut.value) { showToast('先点「生成」'); return; }
       const blob = new Blob([rpOut.value], { type: 'text/markdown;charset=utf-8' });
       if (await saveBlob(blob, '实习周报-' + (rpFrom.value || todayKey()) + '.md')) {
+        markReported(rpFrom.value, rpTo.value);
+        renderMissHint();
         showToast('已存为 Markdown');
       }
     });
@@ -1292,6 +1393,8 @@ registerTool({
         el.querySelector('.il-rp-bytag').checked);
       const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       if (await saveBlob(blob, '实习周报-' + rpFrom.value + '_' + rpTo.value + '.html')) {
+        markReported(rpFrom.value, rpTo.value);
+        renderMissHint();
         showToast('已存 HTML —— 可直接用 Word 打开');
       }
     });

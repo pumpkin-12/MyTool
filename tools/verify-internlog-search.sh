@@ -9,7 +9,7 @@
 #    list.innerHTML 不会打断输入焦点**。这条一旦被破坏（有人把检索框挪进列表里），
 #    用户每敲一个字就失焦 —— 属于"能用但极难用"的退化，必须钉住。
 #
-# 覆盖 47 项断言（检索 32 · 趋势 15）。用法: bash tools/verify-internlog-search.sh
+# 覆盖 67 项断言（检索 32 · 趋势 15 · 缺失周报 20）。用法: bash tools/verify-internlog-search.sh
 # 报告: .workbuddy/_search.txt
 set -u
 
@@ -263,6 +263,126 @@ ASSERT_B_THIN="$(cat <<'EOF'
 EOF
 )"
 
+# ---------- C 缺失周报补齐 ----------
+ACT_C_OPEN="$(cat <<'EOF'
+(function () {
+  document.querySelector('.il-report-btn').click();          // 打开面板（会先填入本周）
+  var f = document.querySelector('.il-rp-from'), t = document.querySelector('.il-rp-to');
+  f.value = '2026-08-31'; f.dispatchEvent(new Event('change', { bubbles: true }));
+  t.value = '2026-09-13'; t.dispatchEvent(new Event('change', { bubbles: true }));
+  return 'opened';
+})()
+EOF
+)"
+
+ASSERT_C1="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var h = document.querySelector('.il-rp-miss');
+  var t = (h || {}).textContent || '';
+  ok('提示条有文案', t.length > 0);
+  ok('报了覆盖的周数（共 2 个自然周）', t.indexOf('共 2 个自然周') >= 0);
+  ok('报了缺失周数（2 周还没生成过）', t.indexOf('2') >= 0 && t.indexOf('还没生成过周报') >= 0);
+  ok('列出了缺失周的周一日期（08-31、09-07）', t.indexOf('08-31') >= 0 && t.indexOf('09-07') >= 0);
+  ok('🔴 单独报了「未填日期不进周报」的条数', t.indexOf('另有 1 篇未填日期') >= 0);
+  ok('「补齐并导出」「标记为已处理」都在',
+    !!document.querySelector('.il-miss-export') && !!document.querySelector('.il-miss-mark'));
+  /* 还没打过任何标记时，不给「清除全部标记」—— 没东西可清 */
+  ok('此时不显示「清除全部标记」（reported 为空）',
+    !document.querySelector('.il-miss-clear'));
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+# 替换 saveBlob 截获导出的内容（它是全局函数声明，模块以裸名调用）
+ACT_C_STUB="$(cat <<'EOF'
+(function () {
+  window.__blobs = [];
+  window.saveBlob = function (blob, name) {
+    var rec = { name: name, type: blob.type, size: blob.size, text: null };
+    window.__blobs.push(rec);
+    blob.text().then(function (t) { rec.text = t; });
+    return Promise.resolve(true);
+  };
+  document.querySelector('.il-miss-export').click();
+  return 'exported';
+})()
+EOF
+)"
+
+ASSERT_C2="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var b = (window.__blobs || [])[0];
+  ok('补齐导出生成了文件', !!b);
+  if (!b) return JSON.stringify({ 通过: pass, 失败: fail });
+  ok('文件名是「实习周报-补齐-起_止.md」',
+    b.name === '实习周报-补齐-2026-08-31_2026-09-13.md');
+  var t = String(b.text);
+  ok('有总标题并写明补了几周', t.indexOf('# 实习周报（补齐 2 周）') === 0);
+  ok('🔴 每段前带「## 周一 ~ 周日」', t.indexOf('## 2026-08-31 ~ 2026-09-06') >= 0
+    && t.indexOf('## 2026-09-07 ~ 2026-09-13') >= 0);
+  ok('🔴 段间用 --- 分隔（合并成一个文件而不是两个）', t.indexOf('\n\n---\n\n') >= 0);
+  ok('含该周的日志正文', t.indexOf('PLC 调试') >= 0);
+  return JSON.stringify({ 通过: pass, 失败: fail, 文件名: b.name });
+})()
+EOF
+)"
+
+ASSERT_C3="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var rep = [];
+  try { rep = JSON.parse(localStorage.getItem('toolbox:internlog:reported') || '[]'); } catch (e) {}
+  eq('导出成功后自动打了 2 个周标记', rep.length, 2);
+  ok('标记是周一日期（08-31 与 09-07）',
+    rep.indexOf('2026-08-31') >= 0 && rep.indexOf('2026-09-07') >= 0);
+  ok('提示条翻成「都已处理过」',
+    (document.querySelector('.il-rp-miss') || {}).textContent.indexOf('都已处理过') >= 0);
+  /* 🔴 正是这条抓出了 bug：最初「全部处理完」分支只写文案不渲染按钮，
+   *    导致标记完之后「清除全部标记」消失、用户再也没有入口清除。 */
+  ok('全部处理完时，「清除全部标记」按钮仍然在',
+    !!document.querySelector('.il-miss-clear'));
+  ok('此时不再显示「补齐并导出」（没东西可补）',
+    !document.querySelector('.il-miss-export'));
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+ACT_C_CLEAR="$(cat <<'EOF'
+(function () {
+  var b = document.querySelector('.il-miss-clear');
+  if (!b) return 'no-clear-button';
+  b.click();
+  var okBtn = document.querySelector('[data-uiok]');
+  if (!okBtn) return 'no-dialog';
+  okBtn.click();
+  return 'confirmed';
+})()
+EOF
+)"
+
+ASSERT_C4="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  var rep = [];
+  try { rep = JSON.parse(localStorage.getItem('toolbox:internlog:reported') || '[]'); } catch (e) {}
+  eq('清除后标记被清空', rep.length, 0);
+  ok('提示条回到「还没生成过周报」',
+    (document.querySelector('.il-rp-miss') || {}).textContent.indexOf('还没生成过周报') >= 0);
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
 run() {
   echo "exe : $AB"
   echo "url : $URL"
@@ -294,11 +414,24 @@ run() {
   "$AB" reload >/dev/null 2>&1; sleep 16
   step "B3. 数据不足时隐藏" "$ASSERT_B_THIN";       RB3="$LAST"
 
+  # 回到 6 条样本，并清掉周报标记，进 C 段
+  "$AB" eval "$SEED" >/dev/null
+  "$AB" eval "(function(){localStorage.removeItem('toolbox:internlog:reported');return 'x';})()" >/dev/null
+  sleep 1
+  "$AB" reload >/dev/null 2>&1; sleep 16
+  "$AB" eval "$ACT_C_OPEN" >/dev/null; sleep 1
+  step "C1. 缺失周提示条" "$ASSERT_C1";           RC1="$LAST"
+  "$AB" eval "$ACT_C_STUB" >/dev/null; sleep 3
+  step "C2. 补齐并导出（合并成一个 md）" "$ASSERT_C2"; RC2="$LAST"
+  step "C3. 导出后自动打标记" "$ASSERT_C3";        RC3="$LAST"
+  "$AB" eval "$ACT_C_CLEAR" >/dev/null; sleep 2
+  step "C4. 清除标记（走 askConfirm）" "$ASSERT_C4"; RC4="$LAST"
+
   echo ""
   echo "================= 汇总 ================="
   local NP=0 NF=0
   for pair in "A0:$RA0" "A1:$RA1" "A2:$RA2" "A3:$RA3" "A4:$RA4" "A5:$RA5" "A6b:$RA6" \
-              "B1:$RB1" "B2:$RB2" "B3:$RB3"; do
+              "B1:$RB1" "B2:$RB2" "B3:$RB3" "C1:$RC1" "C2:$RC2" "C3:$RC3" "C4:$RC4"; do
     local n="${pair%%:*}" v="${pair#*:}"
     if printf '%s' "$v" | grep -qF '失败\":[]'; then
       local p; p=$(printf '%s' "$v" | sed -n 's/.*通过\\":\([0-9]\{1,\}\).*/\1/p')
