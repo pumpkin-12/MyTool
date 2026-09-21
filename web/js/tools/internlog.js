@@ -1,5 +1,261 @@
 'use strict';
 
+/* ===TESTABLE:IlCore:begin=== */
+/* internlog 的领域纯逻辑。与 DefectCore / QuizCore 同定位：
+ * **不引用 AppStore / document / window / esc**，所以 tools/verify-internlog-core.js
+ * 能把整段抽进 vm 跑 —— 检索口径、导出台账、趋势聚合、缺失周判定这些"可判定的规则"
+ * 全部由 node 侧覆盖，不用开浏览器。
+ * today 由调用方传入，内部绝不取当前时间 —— 否则「当前周不算缺失」这类相对口径钉不住。 */
+const IlCore = (function () {
+  const WEEKDAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+  function pad2(n) { return String(n).padStart(2, '0'); }
+
+  /* ---------- 日期：一律按本地零点 ----------
+   * 🔴 不能用 new Date('2026-09-01')：那按 UTC 解析，东八区会退回 8-31（internlog 踩过）。 */
+  function parseDay(s) {
+    if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const y = +s.slice(0, 4), m = +s.slice(5, 7), d = +s.slice(8, 10);
+    const dt = new Date(y, m - 1, d);
+    /* 2026-02-31 会被 Date 顺延成 3-03，必须回头核对，否则统计里凭空多出一天 */
+    if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+    return dt;
+  }
+  function dayKey(dt) {
+    return dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate());
+  }
+  function addDays(s, n) {
+    const dt = parseDay(s);
+    if (!dt) return '';
+    return dayKey(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + n));
+  }
+  function diffDays(a, b) {
+    const da = parseDay(a), db = parseDay(b);
+    if (!da || !db) return null;
+    return Math.round((db - da) / 86400000);
+  }
+  /* 周一 = 一周起点。与热力图 (getDay()+6)%7 的口径保持一致。 */
+  function weekStartOf(s) {
+    const dt = parseDay(s);
+    if (!dt) return '';
+    return dayKey(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - ((dt.getDay() + 6) % 7)));
+  }
+  function weekdayOf(s) {
+    const dt = parseDay(s);
+    return dt ? WEEKDAY[dt.getDay()] : '';
+  }
+  /* 效率评分：1~5 的整数；0 / 缺省 / 非法值一律当「未评」 */
+  function moodNum(l) {
+    const m = Math.round(+((l && l.mood) || 0));
+    return (m >= 1 && m <= 5) ? m : 0;
+  }
+
+  /* ---------- 结构化检索 ----------
+   * f = { q, tags:[], from, to, moodMin, moodMax }，值都是字符串，空串 = 该维度不限。
+   * 🔴 规则写死，否则测试钉不住：
+   *   · 关键词：对 正文 / 备注文本 / 标签 做**整串子串匹配**（不做分词），大小写不敏感
+   *   · 标签：**AND**（同时具备）
+   *   · 日期：from/to 任一非空时，**无日期的日志一律排除**（与 itemsInRange 同口径）
+   *   · 效率：任一侧为 '0' → 只保留未评；否则按数字区间，且**未评(0) 不满足任何数字区间** */
+  function hitsQuery(l, q) {
+    if (!q) return true;
+    const hay = [l.text || '']
+      .concat((l.remarks || []).map(r => (r && r.text) || ''))
+      .concat(l.tags || []);
+    for (let i = 0; i < hay.length; i++) {
+      if (String(hay[i]).toLowerCase().indexOf(q) >= 0) return true;
+    }
+    return false;
+  }
+  function filterLogs(items, f) {
+    const o = f || {};
+    const q = String(o.q == null ? '' : o.q).trim().toLowerCase();
+    const tags = (o.tags || []).slice();
+    const from = String(o.from == null ? '' : o.from);
+    const to = String(o.to == null ? '' : o.to);
+    const mn = String(o.moodMin == null ? '' : o.moodMin);
+    const mx = String(o.moodMax == null ? '' : o.moodMax);
+    const hasMood = mn !== '' || mx !== '';
+    const wantUnrated = mn === '0' || mx === '0';
+    return (items || []).filter(l => {
+      if (!l) return false;
+      if (!hitsQuery(l, q)) return false;
+      if (tags.length) {
+        const own = l.tags || [];
+        for (let i = 0; i < tags.length; i++) if (own.indexOf(tags[i]) < 0) return false;
+      }
+      if (from || to) {
+        if (!l.date) return false;
+        if (from && l.date < from) return false;
+        if (to && l.date > to) return false;
+      }
+      if (hasMood) {
+        const m = moodNum(l);
+        if (wantUnrated) { if (m !== 0) return false; }
+        else {
+          if (m === 0) return false;
+          if (mn && m < +mn) return false;
+          if (mx && m > +mx) return false;
+        }
+      }
+      return true;
+    });
+  }
+
+  /* 全量标签及频次，按频次降序、同频按名称升序（顺序稳定才好写断言） */
+  function allTags(items) {
+    const cnt = {};
+    (items || []).forEach(l => {
+      ((l && l.tags) || []).forEach(t => { cnt[t] = (cnt[t] || 0) + 1; });
+    });
+    return Object.keys(cnt)
+      .map(name => ({ name: name, count: cnt[name] }))
+      .sort((a, b) => (b.count - a.count) || (a.name < b.name ? -1 : (a.name > b.name ? 1 : 0)));
+  }
+
+  /* ---------- xlsx 台账 ---------- */
+  const LEDGER_HEAD = ['序号', '日期', '星期', '效率(1-5)', '标签', '正文', '备注', '图片数'];
+  /* 导出 xlsx 的二维数组（第 0 行是表头）。
+   * 🔴 每个单元格必须是**标量**：标签/备注若把数组直接塞进去，
+   *    aoa_to_sheet 会写成 [object Object]。
+   * 🔴 效率**未评留空串、不写 0** —— 写 0 会被读成"效率 0"，留空才是"没评"。 */
+  function ledgerRows(items) {
+    const rows = [LEDGER_HEAD.slice()];
+    let n = 0;
+    (items || []).forEach(l => {
+      if (!l) return;
+      n++;
+      const m = moodNum(l);
+      const rs = (l.remarks || [])
+        .map(r => String((r && r.text) || '').trim())
+        .filter(Boolean);
+      rows.push([
+        n,
+        l.date || '',
+        l.date ? weekdayOf(l.date) : '',
+        m > 0 ? m : '',
+        (l.tags || []).join('、'),
+        String(l.text == null ? '' : l.text),
+        rs.map(t => '- ' + t).join('\n'),
+        (l.images || []).length
+      ]);
+    });
+    return rows;
+  }
+
+  /* ---------- 效率趋势 ----------
+   * 返回纯数据，SVG 拼接留在 DOM 层（node 侧覆盖口径，真机侧只验"画出 svg 了"）。
+   * 🔴 口径必须与热力图一致：**同一天多篇取最高**（renderHeat 用 Math.max），
+   *    否则同一个用户在同一天会看到两个不同的"当天效率"。
+   * ⚠️ fromKey/toKey 要用热力图那边**用户选的精确端点**，不是按周外扩过的 start/end。 */
+  function trendSeries(items, fromKey, toKey) {
+    const from = parseDay(fromKey), to = parseDay(toKey);
+    if (!from || !to || from > to) return { points: [], unrated: [], days: 0, rated: 0, avg: null };
+    const span = Math.round((to - from) / 86400000) + 1;
+    if (span > 400) return { points: [], unrated: [], days: 0, rated: 0, avg: null };
+    const best = {}, cnt = {};
+    (items || []).forEach(l => {
+      if (!l || !l.date) return;
+      if (l.date < fromKey || l.date > toKey) return;
+      cnt[l.date] = (cnt[l.date] || 0) + 1;
+      const m = moodNum(l);
+      if (m > 0) best[l.date] = Math.max(best[l.date] || 0, m);
+    });
+    const points = [], unrated = [];
+    let sum = 0, rated = 0;
+    Object.keys(cnt).sort().forEach(d => {
+      const m = best[d] || 0;
+      if (m > 0) { points.push({ date: d, mood: m, count: cnt[d] }); sum += m; rated++; }
+      else unrated.push({ date: d, count: cnt[d] });
+    });
+    return {
+      points: points, unrated: unrated, days: span, rated: rated,
+      avg: rated ? +(sum / rated).toFixed(2) : null
+    };
+  }
+  /* 相邻有评分点间隔 > maxGap 天就断开。
+   * 折线跨越大段空档连线，视觉上会暗示"持续下降" —— 这是趋势图最经典的误导。 */
+  function trendSegments(points, maxGap) {
+    const gap = maxGap == null ? 7 : maxGap;
+    const segs = [];
+    let cur = [];
+    (points || []).forEach(p => {
+      if (cur.length) {
+        const d = diffDays(cur[cur.length - 1].date, p.date);
+        if (d == null || d > gap) { segs.push(cur); cur = []; }
+      }
+      cur.push(p);
+    });
+    if (cur.length) segs.push(cur);
+    return segs;
+  }
+  /* 滑动平均：窗口内**只算有评分的记录**（缺失日不进分母）。
+   * 按自然日平均会把"一周只写 1 篇"的人拖到接近 0，是误导。
+   * 窗口内有效记录 < 2 条时不出点 —— 单点构成的"平均线"是假的。 */
+  function movingAvg(points, win) {
+    const w = win == null ? 7 : win;
+    const ps = points || [];
+    const out = [];
+    ps.forEach(p => {
+      const vals = [];
+      ps.forEach(q => {
+        const d = diffDays(q.date, p.date);
+        if (d != null && d >= 0 && d < w) vals.push(q.mood);
+      });
+      if (vals.length < 2) return;
+      let s = 0;
+      vals.forEach(v => { s += v; });
+      out.push({ date: p.date, value: +(s / vals.length).toFixed(2) });
+    });
+    return out;
+  }
+
+  /* ---------- 缺失周报 ----------
+   * 列出 [fromKey, toKey] 覆盖到的自然周（以周一为键），排除**当前周**：
+   * 这周还没过完，不该催。
+   * count = 该周范围内已填日期的日志数（只统计落在 fromKey~toKey 段内的）。
+   * done = 是否已在 reported 里登记过。 */
+  function weeksOf(items, fromKey, toKey, today, reported) {
+    const from = parseDay(fromKey), to = parseDay(toKey);
+    if (!from || !to) return [];
+    const done = {};
+    (reported || []).forEach(d => { if (d) done[d] = true; });
+    const curWeek = weekStartOf(today);
+    const cnt = {};
+    (items || []).forEach(l => {
+      if (!l || !l.date) return;
+      if (l.date < fromKey || l.date > toKey) return;
+      const w = weekStartOf(l.date);
+      if (w) cnt[w] = (cnt[w] || 0) + 1;
+    });
+    const out = [];
+    let w = weekStartOf(fromKey), guard = 0;
+    while (w && w <= toKey && guard++ < 600) {
+      if (w !== curWeek) {
+        out.push({ monday: w, sunday: addDays(w, 6), count: cnt[w] || 0, done: !!done[w] });
+      }
+      w = addDays(w, 7);
+    }
+    return out;
+  }
+  /* 真正要补的周：有日志、但还没登记过。无日志的空周不需要生成周报。 */
+  function missingWeeks(items, fromKey, toKey, today, reported) {
+    return weeksOf(items, fromKey, toKey, today, reported)
+      .filter(w => w.count > 0 && !w.done);
+  }
+
+  return {
+    WEEKDAY: WEEKDAY,
+    parseDay: parseDay, dayKey: dayKey, addDays: addDays, diffDays: diffDays,
+    weekStartOf: weekStartOf, weekdayOf: weekdayOf, moodNum: moodNum,
+    filterLogs: filterLogs, hitsQuery: hitsQuery, allTags: allTags,
+    LEDGER_HEAD: LEDGER_HEAD, ledgerRows: ledgerRows,
+    trendSeries: trendSeries, trendSegments: trendSegments, movingAvg: movingAvg,
+    weeksOf: weeksOf, missingWeeks: missingWeeks
+  };
+})();
+/* ===TESTABLE:IlCore:end=== */
+
 /* ============================================================
  * 工具 8：实习日志
  * ============================================================ */
