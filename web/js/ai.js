@@ -276,8 +276,9 @@ async function aiConfigDialog() {
  * ⚠️ uiOverlay 同一时刻只允许一个遮罩，所以**生成期间不要开遮罩**
  *    （调用方改成把按钮置灰），成功之后再开这个。
  * 🔴 无论如何都把 raw 原文放在「原始输出」可折叠区里 ——
- *    哪怕模型没按小标题输出，用户也能直接用原文。 */
-function aiResultOverlay(reply) {
+ *    哪怕模型没按小标题输出，用户也能直接用原文。
+ * `onFill` 由调用方传（本模块不认识 internlog），不传就不显示「填入周报框」。 */
+function aiResultOverlay(reply, onFill) {
   const parsed = AiCore.splitSections(reply && reply.text);
   const used = reply && reply.prompt_tokens
     ? '<div class="hint" style="margin-top:8px">用量：输入 ' + (reply.prompt_tokens || 0)
@@ -303,18 +304,20 @@ function aiResultOverlay(reply) {
     + esc(parsed.raw) + '</pre></details>'
     + '<div style="display:flex;gap:8px;margin-top:12px">'
     + '<button class="btn btn-primary" data-aicopy>复制</button>'
-    + '<button class="btn" data-aifill>填入周报框</button>'
+    + (typeof onFill === 'function' ? '<button class="btn" data-aifill>填入周报框</button>' : '')
     + '<button class="btn" data-uiclose>关闭</button></div>'
   );
   o.card.querySelector('[data-aicopy]').addEventListener('click', async () => {
     showToast(await copyText(parsed.raw) ? '已复制 AI 原文' : '复制失败');
   });
-  o.card.querySelector('[data-aifill]').addEventListener('click', async () => {
-    /* 填充而不是覆盖保存 —— 用户还能接着用现有的「存 .md / 存 HTML / 复制周报」，
-     * 导出链与「缺失周报」标记逻辑全部复用，这里一行导出代码都不用新写。 */
-    if (typeof window.__aiFillReport === 'function') await window.__aiFillReport(parsed.raw);
-    uiCloseModal();
-  });
+  if (typeof onFill === 'function') {
+    o.card.querySelector('[data-aifill]').addEventListener('click', () => {
+      /* 填充而不是自动覆盖保存 —— 用户接着用现有的「存 .md / 存 HTML / 复制周报」，
+       * 导出链与「缺失周报」标记逻辑全部复用，这里一行导出代码都不用新写。 */
+      onFill(parsed.raw);
+      uiCloseModal();
+    });
+  }
   o.card.querySelector('[data-uiclose]').addEventListener('click', uiCloseModal);
   return parsed;
 }

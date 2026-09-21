@@ -23,6 +23,7 @@ const NODE_SCRIPTS = [
   'verify-quizcore.js',
   'verify-defect.js',
   'verify-internlog-core.js',
+  'verify-ai.js',
   'verify-mermaid-release.js',
   'verify-sysinfo.js',
 ];

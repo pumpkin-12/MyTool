@@ -336,6 +336,7 @@ registerTool({
           <input type="date" class="field il-rp-to">
           <label class="hint" style="display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" class="il-rp-bytag"> 按标签分组</label>
           <button class="btn btn-sm btn-primary il-rp-gen">生成</button>
+          <button class="btn btn-sm il-rp-ai">AI 润色成周报</button>
           <button class="btn btn-sm il-rp-copy">复制周报</button>
           <button class="btn btn-sm il-rp-md">存 .md</button>
           <button class="btn btn-sm il-rp-html">存 HTML</button>
@@ -1399,6 +1400,68 @@ registerTool({
       }
     });
     el.querySelector('.il-rp-close').addEventListener('click', () => { rpBox.hidden = true; });
+
+    /* ---------- AI 润色成周报（第一档唯一的 AI 入口） ----------
+     * 一次调用同时产出四段：润色正文 / 本周成果 / 待办 / 状态点评。
+     * 流程：未配置先开配置弹层 → 范围校验 → 首次隐私确认 → 超长确认
+     *      → 按钮置灰防重复点 → 调 aiCall → 四段结果弹层。
+     * 🔴 生成期间**不开遮罩**（uiOverlay 同一时刻只允许一个），改成把按钮置灰；
+     *    否则结果弹层会和别的遮罩打架。 */
+    el.querySelector('.il-rp-ai').addEventListener('click', async () => {
+      if (!rpFrom.value || !rpTo.value) { showToast('先选好起止日期'); return; }
+      if (typeof aiAvailable === 'function' && !aiAvailable()) {
+        showToast('AI 功能需要桌面端（浏览器里没有 Rust 后端）');
+        return;
+      }
+      /* 没配好就先开配置弹层（askForm 返回时遮罩已经摘了，后面再开结果弹层不冲突） */
+      let cfg = await aiConfigGet();
+      if (!cfg || !cfg.endpoint || !cfg.has_key) {
+        if (!await aiConfigDialog()) return;
+        cfg = await aiConfigGet();
+      }
+      if (!cfg || !cfg.endpoint || !cfg.has_key) { showToast('AI 还没配置好'); return; }
+
+      const all = itemsInRange(rpFrom.value, rpTo.value);
+      if (!all.length) { showToast('该日期范围内没有已填写日期的日志'); return; }
+
+      /* 🔴 首次使用必须明示"内容会发到哪儿"。本项目一贯声明"本地优先、不联网"，
+       *    这是唯一会联网的功能，不能悄悄发。确认过一次就记下，之后不再打扰。 */
+      if (!AppStore.get('ai:notice', false)) {
+        const yes = await askConfirm('本次会把 ' + all.length
+          + ' 篇日志的正文内容发送到：' + cfg.endpoint
+          + '（这是本项目唯一会联网的功能）。是否继续？', '继续');
+        if (!yes) return;
+        AppStore.set('ai:notice', true);
+      }
+
+      const pack = AiCore.chunkLogs(all, 12000);
+      if (pack.truncated) {
+        const yes = await askConfirm('共 ' + all.length + ' 篇，超出上下文预算，'
+          + '本次只发送最近 ' + pack.items.length + ' 篇（更早的 ' + pack.omitted
+          + ' 篇省略）。是否继续？', '继续');
+        if (!yes) return;
+      }
+
+      const btn = el.querySelector('.il-rp-ai');
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '生成中…';
+      try {
+        const stats = AiCore.weeklyStats(pack.items);
+        const user = AiCore.buildUserPrompt(pack.items, rpFrom.value, rpTo.value, stats);
+        /* temperature 压低一点 —— 周报要的是稳定、别发挥 */
+        const reply = await aiCall(AiCore.SYSTEM_PROMPT, user, { temperature: 0.5 });
+        if (reply) {
+          aiResultOverlay(reply, text => {
+            rpOut.value = text;
+            showToast('已填入周报框 —— 接着可以「存 .md / 存 HTML / 复制周报」');
+          });
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    });
     /* 导出 Excel 台账。
      * 数据源用 sorted()（**全部日志**）—— 与 JSON 备份口径一致，不受检索筛选影响。
      * 二维数组由 IlCore.ledgerRows 拼（8 列，标签/备注已 join 成字符串，
