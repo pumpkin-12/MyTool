@@ -1,52 +1,50 @@
-// 验证 web/index.html：
-//   1. 所有内联 <script> 块语法正确
+// 验证前端源码（index.html + js/*.js）：
+//   1. 每个外链脚本块语法正确，且页面里不再残留内联脚本
 //   2. AppStore 在浏览器模式下的 get/set/remove/exportAll/importAll 行为
 //   3. AppStore 在 Tauri 模式下的读写、写盘串行化、失败可见
-// 用法: node _verify.js <index.html> <报告输出路径>
-const fs = require('fs');
-const vm = require('vm');
-const path = require('path');
+//   4. lib.rs 里迁移函数的可达性（静态）
+// 用法: node tools/verify-appstore.js
+// 报告: stdout + .workbuddy/_appstore.txt
+const H = require('./_harness');
 
-const HTML = process.argv[2];
-const REPORT = process.argv[3];
-const html = fs.readFileSync(HTML, 'utf8');
+const html = H.readFrontend();
+const vm = H.vm;
+const R = H.makeReport({ name: 'appstore', expected: 59 });
+const { log, ok } = R;
 
-const lines = [];
-function log(s) { lines.push(s); }
+/* ---------------- 1. 语法检查：逐个解析外链脚本 ---------------- */
+/* 分文件之前这里解析的是 index.html 的内联块。现在前端全部走 <script src>，
+ * 内联块数量归零，于是两条一起断言：内联必须为 0（否则 Tauri 的 sha256 注入
+ * 又要牵扯进来），而外链清单必须完整可解析。
+ * 逐文件不各记一条，而是汇总成一条 —— 断言总数不能随「新增一个板块文件」漂。 */
+log('[1] 前端脚本语法检查');
+/* 只对页面本身扫内联块，不能拿拼好的前端源码扫：
+ * js 文件的注释和字符串里出现过字面量 `<script>`（mermaid 注入那段），会被朴素正则配对上。 */
+const page = H.readRel('web/index.html');
+const inlineRe = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g;
+let inlineBlocks = 0;
+while (inlineRe.exec(page) !== null) inlineBlocks++;
+ok(inlineBlocks === 0, 'index.html 里没有内联 <script>（前端全部外链，CSP 无需哈希托管）',
+   inlineBlocks + ' 块');
 
-let pass = 0;
-let fail = 0;
-function ok(cond, label, extra) {
-  if (cond) { pass++; log('  PASS  ' + label); }
-  else { fail++; log('  FAIL  ' + label + (extra ? '   << ' + extra : '')); }
+const files = H.frontendScripts();
+ok(files.length >= 11, '页面挂了 11 个以上前端脚本（js/*.js 一份都没漏）', files.length);
+const syntaxFails = [];
+for (const f of files) {
+  try { new vm.Script(f.src, { filename: f.rel }); }
+  catch (e) { syntaxFails.push(f.rel + ' -> ' + e.message); }
 }
-
-/* ---------------- 1. 语法检查：逐个解析内联 script ---------------- */
-log('[1] 内联脚本语法检查');
-const re = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g;
-let m;
-let blocks = 0;
-while ((m = re.exec(html)) !== null) {
-  blocks++;
-  try {
-    new vm.Script(m[1], { filename: 'inline-block-' + blocks });
-    log('  PASS  block#' + blocks + ' 语法正确 (' + m[1].length + ' 字符)');
-    pass++;
-  } catch (e) {
-    log('  FAIL  block#' + blocks + ' -> ' + e.message);
-    fail++;
-  }
-}
-ok(blocks >= 1, '找到内联脚本块（数量=' + blocks + '）');
+ok(syntaxFails.length === 0,
+   files.length + ' 个前端脚本全部语法可解析', syntaxFails.join(' | '));
 
 /* ---------------- 抽出 AppStore 源码 ---------------- */
-const startMark = 'const AppStore = (function () {';
-const start = html.indexOf(startMark);
-ok(start >= 0, '定位 AppStore 定义');
-const endMark = '\n})();';
-const end = html.indexOf(endMark, start);
-ok(end >= 0, '定位 AppStore 结束');
-const storeSrc = html.slice(start, end + endMark.length);
+/* 按 TESTABLE 标记取段：标记丢了直接 throw，不再退回"记一条 FAIL 继续跑"。
+ * 老实现用 indexOf('const AppStore = (function () {') + 第一个 '\n})();'，
+ * 一旦有人在 IIFE 之前插入同名片段就会悄悄截错范围。 */
+const storeSrc = H.extractByMarker(html, 'AppStore');
+ok(/^const AppStore = \(function \(\)/m.test(storeSrc), '抽到 AppStore 段（TESTABLE 标记）');
+try { new vm.Script(storeSrc); ok(true, 'AppStore 段可独立解析'); }
+catch (e) { ok(false, 'AppStore 段可独立解析', e.message); }
 log('  AppStore 源码长度 = ' + storeSrc.length);
 
 /* ---------------- 2. 浏览器模式 ---------------- */
@@ -239,11 +237,14 @@ ok(AN.isNative === true, 'isNative 在 Tauri 下为 true');
   const lastToast = s2.__toasts[s2.__toasts.length - 1] || '';
   ok(/disk full/.test(lastToast), '提示里带真实错误信息', lastToast);
   ok(/disk full/.test(AN.lastError() || ''), 'lastError() 暴露失败原因', AN.lastError());
-  ok(AN.set('e', 5) === false, '写盘失败后 set 返回 false（画板大体积告警可生效）');
-
-  AN.set('f', 6);
+  /* set() 的返回值契约（2026-09-20 改）：不再返回布尔。
+   * 旧实现返回的是 writeOk —— 上一次写盘的结果，异步落盘下必然滞后一拍，
+   * 调用方 `if (!AppStore.set(...))` 拿到的是过期判断。画板告警已改成
+   * set 之后 await flush() 再读 lastError()，这里跟着改断言。 */
+  ok(AN.set('e', 5) === undefined, 'set() 不返回值（旧实现返回「上一次」的写盘结果）');
   await AN.flush();
-  ok(AN.set('g', 7) === true, '写盘恢复后 set 重新返回 true');
+  ok(AN.lastError() === null, '下一次写盘成功后 lastError() 归零');
+  ok(disk.get('toolbox:e') === 5, '一次失败不吞掉后续键，e 照常落盘');
 
   /* ---- 导入全部数据：走全量，不逐个 set ---- */
   const dump = AN.exportAll();
@@ -306,10 +307,9 @@ ok(AN.isNative === true, 'isNative 在 Tauri 下为 true');
   // 这类「函数写了但挂在不可达路径上」的 bug 静态断言能抓住。
   log('');
   log('--- [迁移可达性] ---');
-  const LIB = path.join(path.dirname(HTML), '..', 'src-tauri', 'src', 'lib.rs');
   let libSrc = null;
   let libErr = '';
-  try { libSrc = fs.readFileSync(LIB, 'utf8'); } catch (e) { libErr = String(e); }
+  try { libSrc = H.readLibRs(); } catch (e) { libErr = String(e); }
   if (!libSrc) {
     ok(false, '能读到 src-tauri/src/lib.rs（迁移可达性检查的前提）', libErr);
   } else {
@@ -338,8 +338,5 @@ ok(AN.isNative === true, 'isNative 在 Tauri 下为 true');
       '前端启动确实 invoke 了 store_keys / store_read_all');
   }
 
-  log('');
-  log('===== 结果: ' + pass + ' passed, ' + fail + ' failed =====');
-  fs.writeFileSync(REPORT, lines.join('\n') + '\n', 'utf8');
-  process.exitCode = fail ? 1 : 0;
+  R.finish();
 })();

@@ -1,0 +1,40 @@
+name: verify
+
+# 只跑 node 侧回归（--js）。三个真机浏览器脚本要 agent-browser + 本地 http.server，
+# 而且缺依赖时它们自己 exit 2，在 CI 里只会变成永远 SKIP —— 留在本机跑。
+#
+# 前提：这个 workflow 存在的意义是根治「README 里的命令跑不通」和「抽取悄悄漂移」
+# 两类问题。它只在 push / PR 时生效，所以推上去之前先确保本地
+# `node tools/verify-all.js --js` 是绿的。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 本地实测用的就是 22.x。不追求最新，追求和开发者机器一致。
+          node-version: '22'
+
+      # checkout 出来的行尾取决于 runner 的 git 配置（Linux 默认 LF，
+      # Windows 默认 CRLF），而前端源码（web/index.html 与 web/js/**.js）在仓库里是 LF、工作区是 CRLF。
+      # _harness 读入即归一化成 LF，所以两种 checkout 都能匹配到 TESTABLE 标记。
+      # 这里把实际行尾打出来，一旦哪天有人改了这个约定，日志里能直接看出来。
+      - name: Report checkout line endings
+        run: |
+          printf 'index.html CR count: '
+          tr -dc '\r' < web/index.html | wc -c
+          printf 'js/*.js CR count:    '
+          cat web/js/*.js web/js/tools/*.js | tr -dc '\r' | wc -c
+
+      - name: Run regression suite
+        run: node tools/verify-all.js --js

@@ -7,23 +7,16 @@
 //      重点断言「定时器纪律」三条：dispose 清定时器 / visibilitychange 解绑 / alive 阻断回调
 //
 // 用法: node tools/verify-sysinfo.js
-// 退出码 0 = 全通过；结果写入 .workbuddy/_sys.txt
+// 退出码 0 = 全通过；结果打到 stdout 并写入 .workbuddy/_sysinfo.txt
 
-const fs = require('fs');
-const vm = require('vm');
+const H = require('./_harness');
 
-const ROOT = 'D:/Ai-file/MyTool';
-const html = fs.readFileSync(ROOT + '/web/index.html', 'utf8');
-const rs = fs.readFileSync(ROOT + '/src-tauri/src/lib.rs', 'utf8');
-const toml = fs.readFileSync(ROOT + '/src-tauri/Cargo.toml', 'utf8');
-
-let pass = 0, fail = 0;
-const log = [];
-function ok(cond, label, extra) {
-  if (cond) { pass++; log.push('  PASS  ' + label); }
-  else { fail++; log.push('  FAIL  ' + label + (extra ? '  << ' + extra : '')); }
-}
-function section(s) { log.push(''); log.push(s); }
+const html = H.readFrontend();
+const rs = H.readLibRs();
+const toml = H.readCargoToml();
+const vm = H.vm;
+const R = H.makeReport({ name: 'sysinfo', expected: 82 });
+const { ok, section, log } = R;
 
 /* ==========================================================================
  * A. Rust 侧静态检查
@@ -99,14 +92,15 @@ ok(/if \(__sysCleanup\) \{ try \{ __sysCleanup\(\); \} catch \(e\) \{\} \}/.test
 
 section('[B1] 抽面板代码段');
 
-// 从 fmtBytes 到 reportText 结束，这一整段都是面板自足代码
-const segStart = html.indexOf('/* ---------- 系统状态面板 ----------');
-const segEnd = html.indexOf('/* ---------- 应用内对话框 ----------');
+// 起止由配对的 TESTABLE 标记钉死。旧写法是在 html 里 indexOf 两个区块注释串，
+// 注释一挪就静默截错范围 —— 现在标记缺失会 throw，不降级成"少跑几项"。
 let seg = '';
-if (segStart < 0 || segEnd < 0 || segEnd <= segStart) {
-  ok(false, '定位系统状态面板代码段', 'start=' + segStart + ' end=' + segEnd);
-} else {
-  seg = html.slice(segStart, segEnd);
+try {
+  seg = H.extractByMarker(html, 'sysinfoPanel');
+} catch (e) {
+  ok(false, '定位系统状态面板代码段', e.message);
+}
+if (seg) {
   ok(seg.length > 3000, '成功抽出面板代码段（' + seg.length + ' 字符）');
   ok(/function openSysinfo\(/.test(seg), '包含 openSysinfo');
   ok(/function fmtBytes\(/.test(seg), '包含 fmtBytes');
@@ -418,7 +412,4 @@ if (typeof sandbox.openSysinfo === 'function') {
   }
 }
 
-log.push('');
-log.push('  结果: ' + pass + ' 通过 / ' + fail + ' 失败');
-fs.writeFileSync(ROOT + '/.workbuddy/_sys.txt', log.join('\n'), 'utf8');
-process.exit(fail ? 1 : 0);
+R.finish();

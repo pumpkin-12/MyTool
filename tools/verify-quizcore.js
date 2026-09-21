@@ -1,37 +1,18 @@
-// 验证 web/index.html 里的 QuizCore（刷题领域逻辑）。
+// 验证前端源码里的 QuizCore（刷题领域逻辑），读法见 _harness 的 readFrontend。
 // 用例对应 quiz-app 的 QuizServiceTest / QuestionServiceTest / StatsServiceTest。
-// 用法: node tools/verify-quizcore.js <web/index.html> <报告输出路径>
-const fs = require('fs');
-const vm = require('vm');
+// 用法: node tools/verify-quizcore.js
+// 报告: stdout + .workbuddy/_quizcore.txt
+const H = require('./_harness');
 
-const HTML = process.argv[2];
-const REPORT = process.argv[3];
-const html = fs.readFileSync(HTML, 'utf8');
-
-const lines = [];
-function log(s) { lines.push(s); }
-let pass = 0, fail = 0;
-function ok(cond, label, extra) {
-  if (cond) { pass++; log('  PASS  ' + label); }
-  else { fail++; log('  FAIL  ' + label + (extra ? '   << ' + extra : '')); }
-}
-function throws(fn, label, msgPart) {
-  try { fn(); ok(false, label, '没有抛错'); }
-  catch (e) {
-    const m = String(e && e.message || e);
-    ok(!msgPart || m.indexOf(msgPart) >= 0, label, m);
-  }
-}
+const html = H.readFrontend();
+const R = H.makeReport({ name: 'quizcore', expected: 116 });
+const { log, ok, throws } = R;
+const vm = H.vm;
 
 /* ---------------- 抽出 QuizCore ---------------- */
 log('[0] 抽取 QuizCore');
-const startMark = 'const QuizCore = (function () {';
-const start = html.indexOf(startMark);
-ok(start >= 0, '定位 QuizCore 定义');
-const endMark = '\n})();';
-const end = html.indexOf(endMark, start);
-ok(end >= 0, '定位 QuizCore 结束');
-const src = html.slice(start, end + endMark.length);
+const src = H.extractByMarker(html, 'QuizCore');
+ok(/^const QuizCore = \(function \(\)/m.test(src), '抽到 QuizCore 段（TESTABLE 标记）');
 log('  QuizCore 源码长度 = ' + src.length);
 
 const sandbox = {};
@@ -342,7 +323,30 @@ log('[10] 答案展示：判断题显示「正确/错误」而非裸 A/B');
   ok(labelUses >= 7, 'answerLabel 调用点齐全（含题库表/错题本表）', labelUses + ' 处');
 }
 
-log('');
-log('===== 结果: ' + pass + ' passed, ' + fail + ' failed =====');
-fs.writeFileSync(REPORT, lines.join('\n') + '\n', 'utf8');
-process.exitCode = fail ? 1 : 0;
+/* ---------------- 11. 消重：标签条 / 工具栏 / 统计卡只有一套 ---------------- */
+log('[11] 消重：共享标签条与工具栏');
+{
+  const defs = (html.match(/function tabButtons\(/g) || []).length;
+  ok(defs === 1, 'tabButtons 只有一处定义（不再是每个板块各拼一份）', defs + ' 处');
+  ok(/tabButtons\(\[\['dash', '仪表盘'\]/.test(html), '刷题主标签由 tabButtons 生成');
+  ok(/bankTab, 'data-bank-tab'\)/.test(html), '题库题型按钮复用 tabButtons，只换属性名');
+  ok(/function tabButtons\([\s\S]{0,400}?esc\(p\[0\]\)/.test(html), '键与文字都过 esc（它们要进属性与 HTML）');
+  ok(/querySelectorAll\('\.tab\[data-tab\]'\)/.test(html),
+     '主标签绑定仍限定 [data-tab]（去掉限定就会点题型白屏）');
+  ok(!/qz-(tabs?|bar|stats)|df-(tabs?|bar|stats)\b|mm-(bar|sp)\b/.test(html),
+     '旧的分板块类名已清干净（.qz-tab / .df-bar / .mm-bar …）');
+
+  const cssCount = re => (html.match(re) || []).length;
+  ok(cssCount(/^  \.tabs \{/gm) === 1 && cssCount(/^  \.tab \{/gm) === 1 &&
+     cssCount(/^  \.tab\.on \{/gm) === 1 && cssCount(/^  \.bar \{/gm) === 1 &&
+     cssCount(/^  \.stats \{/gm) === 1,
+     'CSS 里 .tabs/.tab/.tab.on/.bar/.stats 各只有一份定义');
+  ok(/\.bar \.field \{ width: auto; \}/.test(html),
+     '工具栏里的输入框收窄规则也共享了（原来只在缺陷板块有）');
+
+  ok((html.match(/function statCard\(/g) || []).length === 1, 'statCard 只有一处定义');
+  const cardUses = (html.match(/statCard\(/g) || []).length;
+  ok(cardUses >= 21, '三处统计视图都改用共用的 statCard（含定义共 22 处）', cardUses + ' 处');
+}
+
+R.finish();

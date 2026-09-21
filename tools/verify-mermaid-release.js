@@ -1,21 +1,16 @@
 // 专项验证：mermaid 按需加载 + 离开释放
-// 手法：把 index.html 的 mermaid 工具模块抽出来，在一个造好的极简 DOM 里跑，
+// 手法：把 js/tools/mermaid.js 的工具模块抽出来（readFrontend 拼好全部前端源码），
+//       在一个造好的极简 DOM 里跑，
 //       断言「dispose 后 lib / window.mermaid / 注入的 <script> 都被清掉」
 // 覆盖：① 改动落点结构 ② 模块可挂载 ③ dispose 释放 ④ 切走再切回 ⑤ 加载中切走
 // 用法: node tools/verify-mermaid-release.js
-// 退出码 0 = 全通过；结果同时写入 .workbuddy/_mm.txt
-const fs = require('fs');
-const vm = require('vm');
+// 退出码 0 = 全通过；结果打到 stdout 并写入 .workbuddy/_mermaid-release.txt
+const H = require('./_harness');
 
-const html = fs.readFileSync('D:/Ai-file/MyTool/web/index.html', 'utf8');
-
-let pass = 0, fail = 0;
-const log = [];
-function ok(cond, label, extra) {
-  if (cond) { pass++; log.push('  PASS  ' + label); }
-  else { fail++; log.push('  FAIL  ' + label + (extra ? '  << ' + extra : '')); }
-}
-function section(s) { log.push(''); log.push(s); }
+const html = H.readFrontend();
+const vm = H.vm;
+const R = H.makeReport({ name: 'mermaid-release', expected: 24 });
+const { ok, section, log } = R;
 
 section('[1] 源码结构检查（改动落点）');
 ok(/const injectedScripts = new Set\(\);/.test(html), 'injectedScripts 集合已声明');
@@ -31,29 +26,21 @@ ok(/if \(disposed\) \{ lib = null; return Promise\.reject/.test(html),
 
 section('[2] 真机行为模拟（抽模块 + 极简 DOM）');
 
-// 抽 mermaid 工具模块：从 "registerTool({\n  id: 'mermaid'" 到下一个顶格 registerTool 之前
-// 🔴 坑一：index.html 是 **CRLF 行尾**，标记串里必须写 \r\n。
-//    写成 \n 会让 indexOf 返回 -1 → 整个 [2]~[6] 段被跳过、连报告文件都不产出，
-//    表现为"脚本跑完了、退出码 0、看着像通过"，实际什么都没验证。
-//    （这段代码自 2026-09-14 写下起就一直没真正跑过，2026-09-15 才发现。）
-//    这里统一归一化成 LF 再匹配，避免以后编辑器改行尾又踩一遍。
+// 抽 mermaid 工具模块。以下两条坑都是真实踩过的，别改回更"聪明"的写法：
+// 🔴 坑一：index.html 是 **CRLF 行尾**，标记串里写 \n 会让 indexOf 返回 -1 →
+//    整个 [2]~[6] 段被跳过、连报告都不产出，表现为"跑完了、退出码 0、看着像通过"，
+//    实际什么都没验证（这段代码自 2026-09-14 写下起一直没真正跑过，09-15 才发现）。
+//    现在由 _harness 读入即归一化成 LF，脚本不必再操心行尾差异。
 // 🔴 坑二：**不要用花括号配平找结尾** —— 段内字符串/正则里也有 `{` `}`（CSS 模板、正则量词），
 //    纯计数会跑偏甚至扫到文件尾返回 -1。
 //    也不要用 `lastIndexOf('工具 10：刷题')` —— 文件里有三处「工具 10：」，
 //    取最后一个会把刷题模块整段吞进来（截出 33858 字符，远超真实 35149 → 语法报
 //    "Unexpected end of input"）。
-//    可靠做法：**下一个顶格 `\nregisterTool({` 就是本段终点**。
-const norm = html.replace(/\r\n/g, '\n');
-const start = norm.indexOf("registerTool({\n  id: 'mermaid'");
-ok(start >= 0, '定位到 mermaid 模块起点');
-if (start < 0) { ok(false, '找到 mermaid 工具模块'); }
-else {
-  const nextTool = norm.indexOf('\nregisterTool({', start + 10);
-  ok(nextTool > start, '定位到下一个工具起点（' + nextTool + '）');
-  // 本段末尾可能带一小段尾随注释（描述存储 key），剥掉不影响执行
-  const seg = norm.slice(start, nextTool);
-
-  ok(seg.length > 1000, '成功抽出 mermaid 模块（' + seg.length + ' 字符）');
+//    现在起点终点都由配对的 TESTABLE 标记钉死，标记缺失直接 throw，不再静默跳段。
+const seg = H.extractByMarker(html, 'mermaidModule');
+ok(true, '抽到 mermaid 模块段（TESTABLE 标记）');
+if (seg) {
+  ok(seg.length > 1000, 'mermaid 模块体量合理（' + seg.length + ' 字符）');
 
   // 极简 DOM / 环境
   const created = { scripts: [], head: [] };
@@ -190,20 +177,11 @@ else {
   }
 }
 
-// 🔴 统一的收尾落盘。三条硬要求，缺一条都会让这个脚本变成"假绿"：
-//   ① 报告必须**无条件产出**（分支漏写文件 = 跑完静默无声）
-//   ② 结果行要能看出**到底跑了多少项**（只跑 15 项和跑满 23 项不该长得一样）
-//   ③ 退出码要如实反映（全绿 0 / 有失败 1）
-//   历史上这个脚本踩过 ①②：CRLF 匹配失败导致 [2]~[6] 整段被跳过，
-//   报告里的结果行却照旧打印"23 通过 / 0 失败"——退出码 0、看着全绿，其实只跑了 8 项。
-function finish() {
-  log.push('');
-  log.push('  结果: ' + pass + ' 通过 / ' + fail + ' 失败'
-    + (pass + fail < 23 ? '   ⚠️ 未跑满 23 项，说明中途有分支被跳过！' : ''));
-  fs.writeFileSync('D:/Ai-file/MyTool/.workbuddy/_mm.txt', log.join('\n'), 'utf8');
-  if (typeof console !== 'undefined' && console.log) {
-    console.log('verify-mermaid-release: ' + pass + ' 通过 / ' + fail + ' 失败'
-      + (pass + fail < 23 ? '（未跑满 23 项！）' : ''));
-  }
-  process.exit(fail ? 1 : 0);
-}
+/* 收尾交给 _harness，三条硬要求都由它兜住：
+ *   ① 报告无条件产出（跑完静默无声 = 没人知道有没有验证）
+ *   ② 断言总数必须等于 EXPECTED（只跑 15 项和跑满 24 项不能长得一样）
+ *   ③ 退出码如实反映（全绿 0 / 有失败或漏跑 1）
+ * 历史上这个脚本踩过 ①②：CRLF 匹配失败导致 [2]~[6] 整段被跳过，结果行照旧
+ * 打印"23 通过 / 0 失败"——退出码 0、看着全绿，其实只跑了 8 项。
+ * 保留函数声明形式（而非 const）：下面三个调用点都在异步回调里，别引入 TDZ 风险。 */
+function finish() { R.finish(); }

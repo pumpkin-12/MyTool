@@ -2,28 +2,20 @@
 // 与 verify-appstore 的分工：
 //   verify-appstore          —— 断言「写盘走了哪条路径、调用了几次」
 //   verify-store-semantics   —— 断言「数据本身对不对」（值语义、往返无损、边界）
-// 用法: node tools/verify-store-semantics.js   （无需传参，路径写死在项目内）
-// 报告: .workbuddy/_probe.txt
-const fs = require('fs');
-const vm = require('vm');
+// 用法: node tools/verify-store-semantics.js
+// 报告: stdout + .workbuddy/_store-semantics.txt
+const H = require('./_harness');
 
-const html = fs.readFileSync('web/index.html', 'utf8');
-const all = html.split('\n');
-// 精确抽取：AppStore（387-610）+ hashStr 及其后小段工具函数（630 起）
-const storeSrc = all.slice(386, 610).join('\n');
-// hashStr 起始，往后取到下一个顶层 function 之前
-let hsStart = all.findIndex(l => /^function hashStr\s*\(/.test(l));
-let hsEnd = hsStart + 1;
-while (hsEnd < all.length && !/^(function |\/\* -{3,})/.test(all[hsEnd])) hsEnd++;
-const hashSrc = all.slice(hsStart, hsEnd).join('\n');
-const src = storeSrc + '\n' + hashSrc;
-if (!/const AppStore/.test(src)) { console.error('抽取失败'); process.exit(1); }
-console.log('[抽取] AppStore ' + storeSrc.split('\n').length + ' 行 + hashStr ' + hashSrc.split('\n').length + ' 行');
+// 历史上这里是 all.slice(386, 610) 按行号硬切。index.html 一行没变它就先漂：
+// 一度从测验 CSS 里切出 `.qz-timer.warn` 塞进 vm，直接 SyntaxError。
+// 现在按 TESTABLE 标记取段，标记丢了就 throw。
+const html = H.readFrontend();
+const src = H.extractByMarker(html, 'AppStore')
+  + '\n' + H.extractByMarker(html, 'hashStr');
 
-const out = [];
-const log = (s) => out.push(s);
-let pass = 0, fail = 0;
-const ok = (c, l, e) => { if (c) { pass++; log('  PASS  ' + l); } else { fail++; log('  FAIL  ' + l + (e ? '  << ' + e : '')); } };
+const R = H.makeReport({ name: 'store-semantics', expected: 30 });
+const { log, ok } = R;
+const vm = H.vm;
 
 (async () => {
   // ---- 模拟 Tauri 后端：分键存储 + 包装格式 ----
@@ -72,7 +64,11 @@ const ok = (c, l, e) => { if (c) { pass++; log('  PASS  ' + l); } else { fail++;
     encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout, setInterval, clearInterval,
     Blob: class { constructor(p) { this.size = (p || []).join('').length; } },
     localStorage: null,
+    // AppStore 的写盘失败路径会调它（set 的浏览器分支、persist 的 reject 分支）。
+    // 沙箱不提供就会变成 ReferenceError，把「保存失败」这条本该被观测的链路掩盖掉。
+    showToast: (msg) => { toasts.push(msg); },
   };
+  const toasts = [];
   const withWin = (invoke) => {
     const o = Object.assign({}, baseGlobals, { __TAURI__: { core: { invoke } } });
     o.window = o;
@@ -189,7 +185,34 @@ const ok = (c, l, e) => { if (c) { pass++; log('  PASS  ' + l); } else { fail++;
   ok(!crashed, '遇到损坏的键文件时初始化不崩溃');
 
   log('');
-  log('===== 结果: ' + pass + ' passed, ' + fail + ' failed =====');
-  fs.writeFileSync('.workbuddy/_probe.txt', out.join('\n') + '\n', 'utf8');
-  process.exitCode = fail ? 1 : 0;
+  log('=== [9] 写盘失败可见性（set() 新契约）===');
+  {
+    // 只让第一次写盘失败，之后恢复正常 —— 用来验证失败不会把写盘链卡死
+    let boom = true;
+    const flakyInvoke = (cmd, args) => {
+      if (cmd === 'store_write_key' && boom) { boom = false; return Promise.reject(new Error('磁盘已满')); }
+      return B.invoke(cmd, args);
+    };
+    const sb3 = withWin(flakyInvoke);
+    vm.createContext(sb3);
+    vm.runInContext(src + '\nglobalThis.__AS = AppStore;\n', sb3);
+    const AS3 = sb3.__AS;
+    await AS3.ready;
+
+    const ret = AS3.set('fail:key', { a: 1 });
+    ok(ret === undefined, 'set() 不返回真值（旧实现返回的是「上一次」写盘结果，会误导调用方）',
+      '实际返回 ' + typeof ret);
+    await AS3.flush();
+    ok(AS3.lastError() && /磁盘已满/.test(AS3.lastError()), '失败被记进 lastError()');
+    ok(toasts.some(t => /磁盘已满/.test(t)), '失败当场弹 toast，不静默');
+    ok(!B.disk.has('toolbox:fail:key'), '失败的那一批确实没落盘');
+
+    // 恢复后再写：既要真的落盘，也要把 lastError 冲掉（否则诊断面板会一直报旧错）
+    AS3.set('ok:key', { a: 2 });
+    await AS3.flush();
+    ok(B.disk.has('toolbox:ok:key'), '一次失败不会卡死写盘链，后续写入照常落盘');
+    ok(AS3.lastError() === null, '成功写入后 lastError() 归零（不留陈旧错误）');
+  }
+
+  R.finish();
 })();

@@ -10,7 +10,7 @@
 //!      图片落盘为 data/assets/<sha1>.<ext>，避免 base64 撑爆存档
 //!   4. 只读地汇报系统状态（sysinfo / dir_usage / store_stats）
 //!
-//! 前端侧对应代码：web/index.html 的 AppStore 存储抽象层 + 系统状态模态框。
+//! 前端侧对应代码：web/js/store.js 的 AppStore 存储抽象层 + web/js/sysinfo.js 的系统状态模态框。
 //!
 //! 存储布局（DATA_DIR 下）：
 //! ```text
