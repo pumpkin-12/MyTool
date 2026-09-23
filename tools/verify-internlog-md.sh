@@ -14,6 +14,13 @@ set -u
 
 export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0:/c/Windows/System32:/c/Windows:$PATH"
 
+# 🔴 关掉 Chrome 自己的后台联网（更新检查 / 组件下载 / 遥测 / 域名可靠性上报）。
+# 不加这些，Chrome 每次启动都会去连 clients2.google.com / update.googleapis.com，
+# 被沙箱拦下并弹授权框 —— 拒绝后会把本脚本的**外层包装器**打断，
+# 症状是「汇总都打印出来了却收到 SIGTERM」（误导性极强，找了好几轮才定位）。
+# agent-browser 的 Options 表里有 AGENT_BROWSER_ARGS，设一次对所有 open/reload 生效。
+export AGENT_BROWSER_ARGS="--disable-background-networking,--disable-component-update,--disable-domain-reliability,--no-pings,--disable-sync,--disable-breakpad,--no-first-run,--no-default-browser-check"
+
 REPORT=".workbuddy/_ilmd.txt"
 EXPECTED=38
 PORT=8911
