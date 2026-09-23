@@ -177,7 +177,10 @@ ASSERT_MD="$(cat <<'EOF'
   ok('导出了 .md 文件', !!b);
   if (!b) return JSON.stringify({ 通过: pass, 失败: fail, 已捕获: (window.__blobs || []).map(function (x) { return x.name; }).join(',') });
   eq('文件名以 实习周报- 开头', b.name.indexOf('实习周报-') === 0, true);
-  ok('内容是周报正文', String(b.text).indexOf('【实习周报】2026-09-21 至 2026-09-21') >= 0);
+  /* ⚠️ 别写死日期：周报面板默认区间是「本周一 ~ 今天」，
+   * 写死具体日期就变成时间炸弹 —— 2026-09-21 写的那版在 09-23 跑必然失败。 */
+  ok('内容是周报正文（抬头含日期区间，不写死具体值）',
+    /【实习周报】\d{4}-\d{2}-\d{2} 至 \d{4}-\d{2}-\d{2}/.test(String(b.text)));
   ok('含日志正文（含 Markdown 原文，未渲染）', String(b.text).indexOf('# 排障记录') >= 0);
   return JSON.stringify({ 通过: pass, 失败: fail, 文件名: b.name, 大小: b.size });
 })()
@@ -252,7 +255,9 @@ run() {
   # node 侧脚本有 _harness 的 expected 兜底，真机侧一直缺这道闸 ——
   # 这正是「假绿」的入口：声明 30 项、实际只跑 23 项，报告照样打印「全绿」
   # （历史上 mermaid 脚本 23 项只跑 8 项就是这么漏的）。
-  if [ "$NP" -ne "$EXPECTED" ]; then
+  # 只在「零失败」时比对 —— NP 只累加全通过的段，有失败时必然小于 EXPECTED，
+  # 那样每次失败都会多喷一句"数量不符"，噪声盖过真问题。
+  if [ "$NF" -eq 0 ] && [ "$NP" -ne "$EXPECTED" ]; then
     echo "  ⛔ 实际断言数 $NP ≠ 声明的 $EXPECTED —— 可能中途有断言被跳过，或改了断言没改 EXPECTED。"
     NF=$((NF + 1))
   fi

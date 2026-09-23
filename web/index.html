@@ -107,6 +107,9 @@
   .tool-title { font-size: 15px; font-weight: 500; }
   .tool-body { max-width: 760px; margin: 0 auto; padding: 20px 20px 48px; }
   .tool-body.wide { max-width: 1100px; }
+  /* internlog 是两栏布局（左栏 470 + 右栏），比 .wide 还需要宽一些。
+   * 只给它用，不动 sketch / mermaid / defect 的既有宽度。 */
+  .tool-body.wide2 { max-width: 1280px; }
 
   .btn {
     padding: 8px 14px; border-radius: 8px;
@@ -181,23 +184,32 @@
   .il-search .il-s-min, .il-search .il-s-max { width: 76px; }
   .il-tagfilter { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .il-tagfilter .il-tag em { font-style: normal; opacity: .6; margin-left: 4px; font-size: 11px; }
-  /* ---------- 统计区：可折叠，默认收起 ----------
-   * 热力图 209 + 趋势图 234 = 443px 是页面上最占地方的两块（真机实测），
-   * 收起后只占一行，把「+ 新日志」和日志列表拉回第一屏。
-   * 标题栏带关键数字（renderHeat 会把 statText 同步进来），
-   * 不展开也能看到"这周写了多少"—— 否则收了就忘了有热力图。 */
-  .il-statbox { margin-bottom: 10px; }
-  .il-stat-head {
-    display: flex; align-items: center; gap: 6px; width: 100%;
-    padding: 6px 10px; font: inherit; font-size: var(--fs-sm);
-    color: var(--muted); text-align: left; cursor: pointer;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--r-md);
+  /* ---------- internlog 两栏布局（2026-09-23）----------
+   * 用户反馈：整页限宽 760px，宽屏下两侧各空一大块，要求"利用起来"。
+   * 分法：左栏放常驻的热力图，右栏放工具栏 + 日志列表。
+   *
+   * 🔴 左栏 470px 是有依据的，不是拍脑袋：
+   *    热力图格子 12px + 间隙 3px = 每周 15px，加左侧 38px 星期标签，
+   *    「近 6 个月」26 周需要 38 + 26×15 − 3 ≈ 425px；
+   *    卡片自身还要吃 padding 14×2 与 border 2 → 左栏至少要 425 + 30 = 455。
+   *    取 470 留余量。「近 12 个月」52 周约 815px 会横向滚动（.heat-scroll 支持）。 */
+  .il-wrap { display: grid; grid-template-columns: 470px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .il-side { position: sticky; top: 12px; }
+  .il-side .il-heat { margin-bottom: 0; }
+  .il-main { min-width: 0; }
+  /* 日志正文保持好读的行宽 —— 右栏再宽也不让正文跟着变宽 */
+  .il-list { max-width: 820px; }
+  /* 窄窗退回单栏：左栏叠到上方，并且默认收起（用「热力图 ▾」展开），
+   * 否则它会把日志列表顶出第一屏 —— 那正是之前修掉的问题。 */
+  @media (max-width: 1099px) {
+    .il-wrap { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .il-side { position: static; margin-bottom: 10px; }
   }
-  .il-stat-head:hover { color: var(--text); border-color: var(--accent); }
-  .il-stat-caret { flex: 0 0 auto; font-size: var(--fs-xs); }
-  .il-stat-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .il-stat-body { margin-top: 10px; }
+  /* 宽屏：热力图常驻左栏，开关按钮不需要；存档里是"收起"也要显示 */
+  @media (min-width: 1100px) {
+    .il-side-btn { display: none !important; }
+    .il-wrap > .il-side[hidden] { display: block !important; }
+  }
   /* 效率趋势（手写 SVG）。颜色**全部走 CSS 类 + 主题变量**，
    * 所以深浅色主题自动跟随，不需要监听主题变化重绘 —— 这是选 SVG 不选 canvas 的主因。 */
   .il-trend { margin-bottom: 12px; }

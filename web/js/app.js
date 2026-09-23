@@ -157,7 +157,7 @@ function renderTool(tool) {
       <a class="back" href="#home">← 返回</a>
       <div class="tool-title">${tool.name}</div>
     </header>
-    <main class="tool-body${['sketch', 'mermaid', 'defect'].indexOf(tool.id) >= 0 ? ' wide' : ''}" id="toolRoot"></main>`;
+    <main class="tool-body${['sketch', 'mermaid', 'defect'].indexOf(tool.id) >= 0 ? ' wide' : ''}${tool.id === 'internlog' ? ' wide2' : ''}" id="toolRoot"></main>`;
   const root = document.getElementById('toolRoot');
   cleanup = tool.mount(root) || null;
 }

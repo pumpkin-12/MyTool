@@ -9,14 +9,14 @@
 #    list.innerHTML 不会打断输入焦点**。这条一旦被破坏（有人把检索框挪进列表里），
 #    用户每敲一个字就失焦 —— 属于"能用但极难用"的退化，必须钉住。
 #
-# 覆盖 78 项断言（检索 32 · 趋势 15 · 缺失周报 20 · 首屏可见性 11）。用法: bash tools/verify-internlog-search.sh
+# 覆盖 84 项断言（检索 32 · 趋势 15 · 缺失周报 20 · 布局契约 17）。用法: bash tools/verify-internlog-search.sh
 # 报告: .workbuddy/_search.txt
 set -u
 
 export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Windows/System32:/c/Windows:$PATH"
 
 REPORT=".workbuddy/_search.txt"
-EXPECTED=78
+EXPECTED=84
 PORT=8913
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ" || exit 1
@@ -195,7 +195,9 @@ ASSERT_B="$(cat <<'EOF'
   var q = function (s) { return document.querySelector(s); };
   var box = q('.il-trend');
   ok('趋势卡片存在', !!box);
-  eq('数据够（有评分 3 天）→ 卡片可见', box.hidden, false);
+  /* 趋势面板现在归按钮管（默认收起），所以这里查的是"数据够不够"——
+   * 表现为按钮没被禁用；面板开不开由 D2 段单独验。 */
+  eq('数据够（有评分 3 天）→ 趋势按钮可用（未禁用）', q('.il-trend-btn').disabled, false);
   ok('渲染出 SVG', !!q('.il-trend .tr-chart'));
   eq('采样点数 = 有评分天数（3）', document.querySelectorAll('.tr-dot').length, 3);
   eq('折线只有 1 段（相邻间隔都 ≤7 天）', document.querySelectorAll('.tr-line').length, 1);
@@ -233,7 +235,7 @@ ASSERT_B_RANGE="$(cat <<'EOF'
   var pass = 0, fail = [];
   function ok(l, c) { if (c) pass++; else fail.push(l); }
   var q = function (s) { return document.querySelector(s); };
-  ok('切到自定义区间后卡片仍可见', q('.il-trend').hidden === false);
+  ok('切到自定义区间后趋势按钮仍可用', q('.il-trend-btn').disabled === false);
   ok('区间文案跟着变成自定义日期', (q('.il-trend-range') || {}).textContent.indexOf('2026-09-01 ~ 2026-09-10') >= 0);
   ok('SVG 仍在', !!q('.il-trend .tr-chart'));
   return JSON.stringify({ 通过: pass, 失败: fail });
@@ -258,8 +260,8 @@ ASSERT_B_THIN="$(cat <<'EOF'
   var pass = 0, fail = [];
   function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
   var q = function (s) { return document.querySelector(s); };
-  eq('🔴 只有 1 条有评分 → 趋势卡片整体隐藏（不留空框）', q('.il-trend').hidden, true);
-  eq('隐藏时也不该有残留 SVG', document.querySelectorAll('.il-trend .tr-chart').length, 0);
+  eq('🔴 只有 1 条有评分 → 趋势按钮被禁用（点开也画不出）', q('.il-trend-btn').disabled, true);
+  eq('数据不足时不画 SVG，只留一句说明', document.querySelectorAll('.il-trend .tr-chart').length, 0);
   return JSON.stringify({ 通过: pass, 失败: fail });
 })()
 EOF
@@ -385,11 +387,16 @@ ASSERT_C4="$(cat <<'EOF'
 EOF
 )"
 
-# ---------- D 首屏可见性（防"家具又堆回去"） ----------
-# 🔴 这一段的由来：2026-09-21 实测发现日志列表顶部被挤到 1001px（视口才 568px），
-#    主操作「+ 新日志」也在首屏之外 —— 因为前几批陆续加了 4 块家具，每块单独看
-#    都合理，但没人管整体层级。重排之后列表顶回到 234px。
-#    **这里把"布局目标"变成断言**，否则下次再加一块家具又会慢慢挤回去。
+# ---------- D 布局契约（防"家具又堆回去" + 两栏 / 收起的开关行为） ----------
+# 🔴 这一段的由来：
+#   2026-09-21 实测发现日志列表顶部被挤到 1001px（视口才 568px），主操作也在首屏外 ——
+#   前几批陆续加了 4 块家具，每块单独看都合理，但没人管整体层级。重排后回到 234px。
+#   2026-09-23 用户进一步要求：宽屏两侧空白要用起来（改两栏），筛选与趋势收成按钮。
+#   **把布局契约变成断言**，否则下次再加一块家具又会慢慢挤回去。
+#
+# ⚠️ 断言数必须**恒定**（EXPECTED 是写死的）。所以响应式那几条把"宽/窄"的判断
+#    写进断言内部，而不是 if/else 出两个分支 —— 否则换台机器窗口宽度不同，
+#    项数就从 10 变成 9，EXPECTED 对不上，整段判失败。
 ASSERT_D="$(cat <<'EOF'
 (function () {
   var pass = 0, fail = [];
@@ -397,52 +404,79 @@ ASSERT_D="$(cat <<'EOF'
   var q = function (s) { return document.querySelector(s); };
   var vh = window.innerHeight;
   var top = function (s) { var e = q(s); return e ? e.getBoundingClientRect().top + window.scrollY : 1e9; };
-  var hgt = function (s) { var e = q(s); return e ? e.getBoundingClientRect().height : -1; };
+  var disp = function (s) { var e = q(s); return e ? getComputedStyle(e).display : "NO_EL"; };
+  var wide = window.innerWidth >= 1100;
+  var mode = wide ? "宽屏" : "窄窗";
 
-  var addBtn = q('.il-add');
-  ok('🔴「+ 新日志」整体在首屏内（底部 ≤ 视口高 ' + vh + '）',
+  var addBtn = q(".il-add");
+  ok("🔴「+ 新日志」在首屏内（底部 ≤ 视口高 " + vh + "）",
     !!addBtn && addBtn.getBoundingClientRect().bottom <= vh);
-  ok('🔴 日志列表顶部在首屏内', top('.il-list') <= vh);
-
+  ok("🔴 日志列表顶部 ≤ 400px（实际 " + top(".il-list") + "px）", top(".il-list") <= 400);
   var visible = 0;
-  document.querySelectorAll('.il-list .note-card').forEach(function (c) {
+  document.querySelectorAll(".il-list .note-card").forEach(function (c) {
     if (c.getBoundingClientRect().top < vh) visible++;
   });
-  ok('🔴 第一屏至少能看到 1 条日志（实际 ' + visible + ' 条）', visible >= 1);
+  ok("🔴 第一屏至少能看到 1 条日志（实际 " + visible + " 条）", visible >= 1);
 
-  /* 绝对预算：与视口无关，防"家具再堆回来" */
-  ok('统计区默认折叠后 ≤ 60px（实际 ' + hgt('.il-statbox') + 'px）', hgt('.il-statbox') <= 60);
-  ok('列表顶 ≤ 400px（实际 ' + top('.il-list') + 'px）', top('.il-list') <= 400);
-  ok('统计区默认是收起的', getComputedStyle(q('.il-stat-body')).display === 'none');
-  ok('折叠标题带关键数字（不展开也能看到概况）',
-    /统计 · .*已写 \d+ 篇/.test((q('.il-stat-sum') || {}).textContent || ''));
-  ok('折叠头有无障碍标注 aria-expanded=false',
-    q('.il-stat-head').getAttribute('aria-expanded') === 'false');
+  ok("筛选面板默认收起", disp(".il-search") === "none");
+  ok("趋势面板默认收起", disp(".il-trend") === "none");
+  ok("筛选按钮默认 aria-expanded=false", q(".il-filters").getAttribute("aria-expanded") === "false");
+
+  var cols = getComputedStyle(q(".il-wrap")).gridTemplateColumns.split(" ").length;
+  ok("响应式契约：两栏/单栏（" + mode + " " + window.innerWidth + "px → " + cols + " 列）",
+    wide ? cols >= 2 : cols === 1);
+  ok("响应式契约：热力图 宽屏常驻 / 窄窗默认收起（" + mode + "）",
+    wide ? disp(".il-side") !== "none" : disp(".il-side") === "none");
+  ok("响应式契约：热力图开关按钮 宽屏隐藏 / 窄窗可见（" + mode + "）",
+    wide ? disp(".il-side-btn") === "none" : disp(".il-side-btn") !== "none");
+
+  var hs = q(".heat-scroll");
+  var noScroll = !!hs && hs.scrollWidth <= hs.clientWidth + 1;
+  ok("🔴 左栏放得下「近 6 个月」不横滚（" + (wide ? "内容 "
+    + (hs ? hs.scrollWidth : "?") + " / 可见 " + (hs ? hs.clientWidth : "?") : mode + "跳过") + "）",
+    wide ? noScroll : true);
   return JSON.stringify({ 通过: pass, 失败: fail });
 })()
 EOF
 )"
 
-ACT_D_OPEN="(function(){document.querySelector('.il-stat-head').click();return 'opened';})()"
+ACT_A_OPEN="(function(){var b=document.querySelector('.il-filters');if(b) b.click();return 'ok';})()"
+
+ACT_D_PREP="(function(){
+  var rp=document.querySelector('.il-rp-close'); if(rp) rp.click();
+  ['.il-filters','.il-trend-btn'].forEach(function(sel){
+    var b=document.querySelector(sel);
+    if(b && b.getAttribute('aria-expanded')==='true') b.click();
+  });
+  return 'ok';
+})()"
+
+ACT_D_OPEN="(function(){document.querySelector('.il-filters').click();return 'ok';})()"
 
 ASSERT_D2="$(cat <<'EOF'
 (function () {
   var pass = 0, fail = [];
   function ok(l, c) { if (c) pass++; else fail.push(l); }
   var q = function (s) { return document.querySelector(s); };
-  ok('点开后统计区真的展开（高度 > 300px）',
-    q('.il-statbox').getBoundingClientRect().height > 300);
-  ok('热力图随之可见', getComputedStyle(q('.il-stat-body')).display !== 'none');
-  ok('aria-expanded 跟着变 true', q('.il-stat-head').getAttribute('aria-expanded') === 'true');
-  var saved = '';
-  try { saved = localStorage.getItem('toolbox:internlog:statOpen') || ''; } catch (e) {}
-  return JSON.stringify({ 通过: pass, 失败: fail, 存档: saved });
+  /* 自己点开，不依赖外部动作 —— 否则外面漏一次调用，这里就整段假失败
+   * （2026-09-23 就是这么栽的：prep 把面板收起了，但没人再点开）。 */
+  q(".il-filters").click();
+  ok("点「筛选」后筛选条显示", getComputedStyle(q(".il-search")).display !== "none");
+  ok("筛选按钮文案变成「筛选 ▴」", q(".il-filters").textContent.indexOf("▴") >= 0);
+  ok("筛选按钮 aria-expanded=true", q(".il-filters").getAttribute("aria-expanded") === "true");
+  q(".il-trend-btn").click();
+  ok("点「趋势」后趋势面板显示", getComputedStyle(q(".il-trend")).display !== "none");
+  ok("趋势面板里真的画出了 SVG", !!q(".il-trend-box svg"));
+  ok("趋势按钮 aria-expanded=true", q(".il-trend-btn").getAttribute("aria-expanded") === "true");
+  ok("筛选条与趋势图能同时开着（互不干扰）",
+    getComputedStyle(q(".il-search")).display !== "none"
+    && getComputedStyle(q(".il-trend")).display !== "none");
+  return JSON.stringify({ 通过: pass, 失败: fail });
 })()
 EOF
 )"
 
-ACT_D_CLOSE="(function(){document.querySelector('.il-stat-head').click();return 'closed';})()"
-
+ACT_D_CLOSE="(function(){document.querySelector('.il-filters').click();document.querySelector('.il-trend-btn').click();return 'ok';})()"
 run() {
   echo "exe : $AB"
   echo "url : $URL"
@@ -457,6 +491,13 @@ run() {
 
   step() { echo ""; echo "===== $1 ====="; LAST="$("$AB" eval "$2")"; echo "$LAST"; }
 
+  # 🔴 D1 放在最前面：它断言的是**默认状态**（筛选/趋势收起、列表在首屏内）。
+  #    放到后面跑会被前面各段打开的面板污染 —— 之前就是这么误报过一次
+  #    （C 段把周报面板开着没关，列表顶从 162 涨到 524）。
+  step "D1. 布局契约（默认状态）" "$ASSERT_D";     RD1="$LAST"
+  # A 段要往搜索框里打字，而搜索框现在默认收起 —— **隐藏元素的 focus() 是无效的**，
+  # 不先点开，「重写列表后输入框保持焦点」这条会假失败。
+  "$AB" eval "$ACT_A_OPEN" >/dev/null; sleep 1
   step "A0. 检索条结构" "$ASSERT_A0";              RA0="$LAST"
   "$AB" eval "$ACT_Q" >/dev/null; sleep 1
   step "A1. 关键词过滤 + 焦点保持 + 热力图不受影响" "$ASSERT_A1"; RA1="$LAST"
@@ -486,9 +527,10 @@ run() {
   step "C3. 导出后自动打标记" "$ASSERT_C3";        RC3="$LAST"
   "$AB" eval "$ACT_C_CLEAR" >/dev/null; sleep 2
   step "C4. 清除标记（走 askConfirm）" "$ASSERT_C4"; RC4="$LAST"
-  step "D1. 首屏可见性（防家具堆回去）" "$ASSERT_D"; RD1="$LAST"
-  "$AB" eval "$ACT_D_OPEN" >/dev/null; sleep 2
-  step "D2. 统计区可展开" "$ASSERT_D2"; RD2="$LAST"
+  # D2 验开关行为。先收掉前面各段打开的面板，否则测的是"上一步留下的状态"，
+  # 而不是"点按钮的效果"。
+  "$AB" eval "$ACT_D_PREP" >/dev/null; sleep 1
+  step "D2. 筛选 / 趋势 开关行为" "$ASSERT_D2"; RD2="$LAST"
   "$AB" eval "$ACT_D_CLOSE" >/dev/null; sleep 1
 
   echo ""
@@ -511,7 +553,12 @@ run() {
   # node 侧脚本有 _harness 的 expected 兜底，真机侧一直缺这道闸 ——
   # 这正是「假绿」的入口：声明 30 项、实际只跑 23 项，报告照样打印「全绿」
   # （历史上 mermaid 脚本 23 项只跑 8 项就是这么漏的）。
-  if [ "$NP" -ne "$EXPECTED" ]; then
+  # ⚠️ 只在"零失败"时才比对断言数。
+  #    因为 NP 只累加**全通过**的段，一有失败就必然小于 EXPECTED ——
+  #    那样每次失败都会额外喷一句"数量不符"，噪声盖过真问题。
+  #    这道闸的目的是抓"全绿但数量不对"（历史上 mermaid 脚本 23 项只跑 8 项那种假绿），
+  #    而"有失败"本来就已经判失败了。
+  if [ "$NF" -eq 0 ] && [ "$NP" -ne "$EXPECTED" ]; then
     echo "  ⛔ 实际断言数 $NP ≠ 声明的 $EXPECTED —— 可能中途有断言被跳过，或改了断言没改 EXPECTED。"
     NF=$((NF + 1))
   fi

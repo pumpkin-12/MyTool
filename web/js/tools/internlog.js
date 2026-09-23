@@ -267,44 +267,14 @@ registerTool({
   icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M8 3.5v3"/><path d="M16 3.5v3"/><path d="M4 10h16"/><path d="M8.5 14.5h7"/><path d="M8.5 17h4"/></svg>',
   mount(el) {
     el.innerHTML = `
-      <div class="row">
-        <button class="btn btn-primary il-add">+ 新日志</button>
-        <button class="btn il-report-btn">生成周报</button>
-        <button class="btn il-copy">复制全部</button>
-        <button class="btn il-preview">预览</button>
-        <button class="btn il-xlsx">导出 Excel</button>
-        <button class="btn il-export">导出备份</button>
-        <button class="btn il-import">导入</button>
-        <input type="file" class="il-file" accept=".json,application/json" hidden>
-        <span class="hint il-stat"></span>
-      </div>
-      <div class="il-search">
-        <input class="field il-s-q" placeholder="搜索正文 / 备注 / 标签…">
-        <input type="date" class="field il-s-from" title="起始日期（含）">
-        <span class="hint">至</span>
-        <input type="date" class="field il-s-to" title="结束日期（含）">
-        <span class="hint">效率</span>
-        <select class="field il-s-min"></select>
-        <span class="hint">至</span>
-        <select class="field il-s-max"></select>
-        <button class="btn btn-sm il-s-clear">清除筛选</button>
-        <span class="hint il-s-stat"></span>
-        <span class="il-tags il-tagfilter"></span>
-      </div>
-      <div class="il-statbox">
-        <button class="il-stat-head" type="button" title="展开 / 收起统计图">
-          <span class="il-stat-caret">▸</span>
-          <span class="il-stat-sum">统计</span>
-        </button>
-        <div class="il-stat-body" hidden>
+      <div class="il-wrap">
+        <aside class="il-side">
       <div class="il-heat">
         <div class="il-heat-head">
           <span class="il-heat-title">贡献度 · 按效率上色</span>
-          <span style="display:flex; gap:8px; align-items:center;">
-            <select class="field il-heat-year"></select>
-            <span class="hint il-heat-stat"></span>
-          </span>
+          <select class="field il-heat-year"></select>
         </div>
+        <div class="hint il-heat-stat"></div>
         <div class="il-heat-range" hidden>
           <input type="date" class="field il-hr-from">
           <span class="hint">至</span>
@@ -328,15 +298,42 @@ registerTool({
           </div>
         </div>
       </div>
-      <div class="il-trend" hidden>
-        <div class="il-heat-head">
-          <span class="il-heat-title">效率趋势 <span class="il-trend-range"></span></span>
-          <span class="hint il-trend-stat"></span>
-        </div>
-        <div class="il-trend-box"></div>
-      </div>
-        </div>
-      </div>
+        </aside>
+        <div class="il-main">
+          <div class="row">
+            <button class="btn btn-primary il-add">+ 新日志</button>
+            <button class="btn il-report-btn">生成周报</button>
+            <button class="btn il-filters">筛选 ▾</button>
+            <button class="btn il-trend-btn">趋势 ▾</button>
+            <button class="btn il-side-btn">热力图 ▾</button>
+            <button class="btn il-copy">复制全部</button>
+            <button class="btn il-preview">预览</button>
+            <button class="btn il-xlsx">导出 Excel</button>
+            <button class="btn il-export">导出备份</button>
+            <button class="btn il-import">导入</button>
+            <input type="file" class="il-file" accept=".json,application/json" hidden>
+            <span class="hint il-stat"></span>
+          </div>
+          <div class="il-search" hidden>
+            <input class="field il-s-q" placeholder="搜索正文 / 备注 / 标签…">
+            <input type="date" class="field il-s-from" title="起始日期（含）">
+            <span class="hint">至</span>
+            <input type="date" class="field il-s-to" title="结束日期（含）">
+            <span class="hint">效率</span>
+            <select class="field il-s-min"></select>
+            <span class="hint">至</span>
+            <select class="field il-s-max"></select>
+            <button class="btn btn-sm il-s-clear">清除筛选</button>
+            <span class="hint il-s-stat"></span>
+            <span class="il-tags il-tagfilter"></span>
+          </div>
+          <div class="il-trend" hidden>
+            <div class="il-heat-head">
+              <span class="il-heat-title">效率趋势 <span class="il-trend-range"></span></span>
+              <span class="hint il-trend-stat"></span>
+            </div>
+            <div class="il-trend-box"></div>
+          </div>
       <div class="il-report" hidden>
         <div class="il-report-row">
           <input type="date" class="field il-rp-from">
@@ -353,7 +350,9 @@ registerTool({
         <div class="il-rp-miss hint"></div>
         <textarea class="field il-rp-out" readonly placeholder="选好日期范围后点「生成」"></textarea>
       </div>
-      <div class="il-list"></div>`;
+      <div class="il-list"></div>
+        </div>
+      </div>`;
     let logs = AppStore.get('internlog:items', []);
     /* 预览模式：把正文的 textarea 换成 Markdown 渲染结果。
      * 只影响「正文」—— 日期/标签/效率/备注照旧可改，读的时候也能顺手调。 */
@@ -459,31 +458,37 @@ registerTool({
       });
     });
 
-    /* ---------- 统计区折叠 ----------
-     * 热力图 209px + 趋势图 234px = 443px，是页面上最占地方的两块（真机实测）。
-     * 默认**折叠**，把「+ 新日志」和日志列表拉回第一屏 ——
-     * 折叠标题里带上关键数字（已写 N 篇 / 平均效率），不展开也能看到概况，
-     * 否则"收了之后就忘了有热力图"。
-     * 状态存 internlog:statOpen，与 internlog:heat / internlog:preview 一个习惯。 */
-    const statHead = el.querySelector('.il-stat-head');
-    const statBody = el.querySelector('.il-stat-body');
-    const statCaret = el.querySelector('.il-stat-caret');
-    const statSum = el.querySelector('.il-stat-sum');
-    let statOpen = !!AppStore.get('internlog:statOpen', false);
-    function syncStat() {
-      if (!statBody) return;
-      statBody.hidden = !statOpen;
-      statCaret.textContent = statOpen ? '▾' : '▸';
-      statHead.setAttribute('aria-expanded', statOpen ? 'true' : 'false');
-    }
-    if (statHead) {
-      statHead.addEventListener('click', () => {
-        statOpen = !statOpen;
-        AppStore.set('internlog:statOpen', statOpen);
-        syncStat();
+    /* ---------- 面板开关（筛选 / 趋势 / 窄屏热力图） ----------
+     * 用户 2026-09-23 的要求：筛选条和趋势图"平常收起来，要用了点按钮再出来"。
+     * 三者都是「默认收起 + 点按钮展开 + 记状态」，用同一个 helper 统一处理 ——
+     * 顺带把 aria-expanded 和按钮上的 ▾ / ▴ 一起同步，免得三处各写各的。
+     *
+     * ⚠️ 热力图在**宽屏是常驻左栏**（不需要开关），只有窄窗才需要能收起来。
+     *    按钮的显隐与"宽屏强制显示"都交给 CSS 的 media query 管
+     *    （index.html 里的 @media (min-width: 1100px)），JS 不参与判断窗口宽度。 */
+    function panelToggle(btnSel, panelSel, stateKey) {
+      const btn = el.querySelector(btnSel);
+      const panel = el.querySelector(panelSel);
+      if (!btn || !panel) return null;
+      const label = btn.textContent.replace(/ ?[▾▴]$/, '');
+      let open = !!AppStore.get(stateKey, false);
+      function sync() {
+        panel.hidden = !open;
+        btn.textContent = label + ' ' + (open ? '▴' : '▾');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.classList.toggle('btn-primary', open);
+      }
+      btn.addEventListener('click', () => {
+        open = !open;
+        AppStore.set(stateKey, open);
+        sync();
       });
-      syncStat();
+      sync();
+      return { sync: sync };
     }
+    panelToggle('.il-filters', '.il-search', 'internlog:filtersOpen');
+    panelToggle('.il-trend-btn', '.il-trend', 'internlog:trendOpen');
+    panelToggle('.il-side-btn', '.il-side', 'internlog:sideOpen');
     /* ---------- 日志配图 ----------
      * 复用 AppStore 的资产机制，与画板同一套：内容哈希去重、存 data/assets/。
      * ⚠️ 画板那套 assetUrls / imgSrcOf 在 sketch 模块的闭包里，这里拿不到，
@@ -718,15 +723,28 @@ registerTool({
      * 口径与热力图一致：**同一天多篇取最高**（renderHeat 用 Math.max），图上标注出来，
      * 否则同一天在两处会显示成两个不同的效率值。
      * 区间用热力图传进来的 fromKey/toKey（用户选的精确端点），**不是按周外扩过的 start/end**。 */
+    /* 趋势"有没有数据"与"面板开不开"是**两件事**，分开管：
+     *   面板开不开 = 用户的选择（panelToggle 管）
+     *   有没有数据 = 事实（这里算 trendOk）
+     * 混在一起写就会互相覆盖 —— 用户点开了，结果 renderTrend 又把它 hidden 掉。 */
+    let trendOk = false;
     function renderTrend(fromKey, toKey, label) {
-      const box = el.querySelector('.il-trend');
       const cv = el.querySelector('.il-trend-box');
       const st = el.querySelector('.il-trend-stat');
-      if (!box || !cv) return;
+      const btn = el.querySelector('.il-trend-btn');
+      if (!cv) return;
       const d = IlCore.trendSeries(logs, fromKey, toKey);
-      /* 一个点连不成趋势 —— 数据不够就整块收起来，不留空框 */
-      if (d.rated < 2) { box.hidden = true; return; }
-      box.hidden = false;
+      trendOk = d.rated >= 2;
+      /* 数据不够就把按钮禁掉并说明原因 —— 让用户点开看到一个空框是最差的做法 */
+      if (btn) {
+        btn.disabled = !trendOk;
+        btn.title = trendOk ? '展开 / 收起效率趋势' : '需要至少 2 天有评分的数据';
+      }
+      if (!trendOk) {
+        cv.innerHTML = '<div class="empty">有评分的天数不足 2 天，画不出趋势</div>';
+        if (st) st.textContent = '';
+        return;
+      }
       el.querySelector('.il-trend-range').textContent = '· ' + String(label).trim() + '（同日多篇取最高）';
       st.textContent = '有评分 ' + d.rated + ' 天 · 覆盖区间 ' + d.days + ' 天'
         + (d.avg != null ? ' · 平均 ' + d.avg : '');
@@ -887,8 +905,6 @@ registerTool({
       const nowKey = fmtDate(now);
       if (streak > 0 && nowKey >= fromKey && nowKey <= toKey) statText += ' · 连续 ' + streak + ' 天';
       if (statEl) statEl.textContent = statText;
-      /* 折叠标题上也放一份关键数字 —— 不展开就知道这周写了多少 */
-      if (statSum) statSum.textContent = '统计 · ' + statText.trim();
       syncHeatRangeUI();
       fillYearSelect();
       /* 趋势图复用热力图这一档的区间（fromKey/toKey 是用户选的精确端点，不是外扩过的）。

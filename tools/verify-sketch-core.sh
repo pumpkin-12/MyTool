@@ -300,7 +300,9 @@ run() {
   done
   echo "  合计通过 $NP 项，失败段数 $NF"
   # 🔴 校验实际断言数与声明一致（node 侧有 _harness 的 expected 兜底，真机侧一直缺这道闸）。
-  if [ "$NP" -ne "$EXPECTED" ]; then
+  # 只在「零失败」时比对 —— NP 只累加全通过的段，有失败时必然小于 EXPECTED，
+  # 那样每次失败都会多喷一句"数量不符"，噪声盖过真问题。
+  if [ "$NF" -eq 0 ] && [ "$NP" -ne "$EXPECTED" ]; then
     echo "  ⛔ 实际断言数 $NP ≠ 声明的 $EXPECTED —— 可能中途有断言被跳过。"
     NF=$((NF + 1))
   fi
