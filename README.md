@@ -8,7 +8,7 @@
 
 | 工具 | 说明 |
 | --- | --- |
-| **实习日志**（internlog） | 按日期记录工作内容，支持心情、标签、备注、配图（粘贴 / 拖入 / 选文件），**结构化检索**（关键词 × 标签 × 日期 × 效率），贡献度热力图 + **效率趋势曲线**；正文可切 **Markdown 预览**；可导出 **Excel 台账**、周报 **.md / .html（Word 可直接打开）**，并**自动补齐缺失周报**；周报支持 **AI 润色**（需自备 API Key，本项目唯一会联网的功能） |
+| **实习日志**（internlog） | 按日期记录工作内容，支持心情、标签、备注、配图（粘贴 / 拖入 / 选文件），**结构化检索**（关键词 × 标签 × 日期 × 效率），贡献度热力图 + **效率趋势曲线**，左栏**待办清单**（可折叠，独立于日志）；正文可切 **Markdown 预览**；可导出 **Excel 台账**、周报 **.md / .html（Word 可直接打开）**，并**自动补齐缺失周报**；周报支持 **AI 润色**（需自备 API Key，本项目唯一会联网的功能） |
 | **无限画板**（sketch） | 画笔 / 便签 / 直线箭头 / 选择 / 图片 / 迷你地图 / 对齐参考线 / 触屏缩放，支持导出 PNG、SVG、JSON |
 | **Mermaid 编辑器**（mermaid） | 离线 Mermaid 渲染，实时预览 + 语法错误行定位，按需加载并在离开时释放内存 |
 | **刷题**（quiz） | 导入题目（Excel / JSON）建题库，支持随机练习、错题重练、成绩记录与统计分析 |
@@ -95,12 +95,13 @@ object-src 'none'; base-uri 'self'; form-action 'none'
 
 ```
 web/
-  index.html            页面壳（476 行）：<style> 全套样式 + 按执行顺序挂的 11 个 <script src>
+  index.html            页面壳（625 行）：<style> 全套样式 + 按执行顺序挂的 12 个 <script src>
   js/                   前端逻辑，板块各占一个文件（普通外链脚本，共用全局作用域，无打包器）
     store.js            AppStore —— 必须最先加载
-    util.js             通用函数（esc / tabButtons / statCard / showToast / saveBlob / loadXlsx）
+    util.js             通用函数（esc / tabButtons / statCard / showToast / saveBlob / loadXlsx / mdToHtml）
     sysinfo.js          系统状态面板
     ui.js               应用内对话框（askConfirm / askForm，取代禁用的 prompt/confirm）
+    ai.js               AiCore 纯逻辑 + aiCall + AI 配置 / 结果弹层
     tools.js            工具注册表 registry + ENABLED_TOOLS
     tools/internlog.js  实习日志
     tools/sketch.js     画板
@@ -117,6 +118,7 @@ src-tauri/
   src/
     main.rs             入口
     lib.rs              Rust 侧全部逻辑（存储、资产、导出、系统状态）
+    ai.rs               AI 转发（配置读写 + chat/completions）
 tools/
   _harness.js           verify 脚本的共享地基（路径 / 抽取 / 报告 / 假绿闸门）
   verify-all.js         一条命令跑完全部回归 ← 用这个
@@ -124,11 +126,15 @@ tools/
   verify-store-semantics.js  AppStore 值语义（隔离 / 往返 / 边界 / 容错）
   verify-quizcore.js    刷题核心算法
   verify-defect.js      缺陷统计核心算法（DefectCore）
+  verify-internlog-core.js   实习日志核心逻辑 + xlsx 生成回读
+  verify-ai.js          AiCore + Rust 侧接线 + Cargo.toml TLS 选型
   verify-mermaid-release.js  mermaid 按需加载与释放
   verify-sysinfo.js     系统状态模块
   verify-sketch-core.sh        画板 23 项（真机浏览器）
   verify-internlog-heat.sh     热力图（真机浏览器）
   verify-internlog-images.sh   日志配图（真机浏览器）
+  verify-internlog-md.sh       Markdown 预览 + 周报导出（真机浏览器）
+  verify-internlog-search.sh   检索 + 两栏布局 + 待办（真机浏览器）
   verify-csp.sh                CSP 46 项（真机浏览器 + 与配置同源的策略）
   _csp_server.py              上者的配套静态服务：把 tauri.conf.json 的 CSP 下发进浏览器
   make-icons.py         重新生成全套图标（Pillow）
@@ -162,7 +168,7 @@ Windows 10 **不自带** WebView2 运行时。当前配置为 `downloadBootstrap
 
 ## Rust 侧命令
 
-`src-tauri/src/lib.rs` 注册 15 个命令，分四类。
+`src-tauri/src/lib.rs` 注册 15 个命令，`src-tauri/src/ai.rs` 另有 3 个，合计 18 个，分五类。
 
 **存储 —— 分键（日常路径）**
 
@@ -201,6 +207,18 @@ Windows 10 **不自带** WebView2 运行时。当前配置为 `downloadBootstrap
 
 前端拿不到的东西（磁盘上的备份、资产文件）只能由 Rust 侧统计，所以有 `store_stats` / `asset_stats`。
 
+**AI（`src-tauri/src/ai.rs`，本项目唯一会联网的一组）**
+
+| 命令 | 作用 |
+| --- | --- |
+| `ai_config_set` | 存 API Key 与接口地址到 `data/ai/secret.json` |
+| `ai_config_get` | 只回 `has_key` + Key 尾 4 位 —— **返回结构体里根本没有 `api_key` 字段** |
+| `ai_chat` | 按 OpenAI 兼容格式 `POST {endpoint}/chat/completions`，转发模型回复 |
+
+**为什么 AI 必须走 Rust 转发**：这不是"更优选择"而是唯一选择 —— 严格 CSP 的 `connect-src 'self' ipc:` 让前端根本连不出去（WebView origin 是 `tauri://localhost`，直连第三方 API 也会被 CORS 拦）。Key 存 `data/ai/secret.json`，**刻意放在 `AppStore` 管辖的 `data/keys/` 之外**，物理上不可能被「导出全部数据」带走；`exportAll()` 另加一道 `NEVER_EXPORT` 闸门兜底。
+
+> ⚠️ `Cargo.toml` 里 reqwest **必须** `default-features = false` 并选 `native-tls`：reqwest 0.13 的 `default-tls` 是 rustls → aws-lc-rs，在 Windows 上要 cmake + NASM，保留 default 会编不过。
+
 ### 数据位置
 
 存档目录由 `lib.rs` 的 `DATA_DIR` 常量决定，当前**硬编码**为 `D:\Ai-file\MyTool\data`（刻意放在项目目录下，便于整体备份、不与源码混住）。注意它和 `tools/*.js` 里曾经出现的本机绝对路径一样，**换机器或挪目录要一起改** —— 目前只有 `tools/make-icons.py` 还留着一处硬编码路径。
@@ -224,12 +242,12 @@ Windows 10 **不自带** WebView2 运行时。当前配置为 `downloadBootstrap
 
 ```bash
 node tools/verify-all.js        # 全部（含真机浏览器脚本）
-node tools/verify-all.js --js   # 只跑无外部依赖的 6 个（CI 用）
+node tools/verify-all.js --js   # 只跑无外部依赖的 8 个（CI 用）
 ```
 
 零参数、结果打 stdout、退出码 0=全通过。单跑某一个也可以：`node tools/verify-appstore.js`。
 
-**为什么需要 `--js`**：五个 `.sh` 脚本要真机浏览器（`agent-browser` + 本地静态服务），因为画板的行为全在 canvas 渲染 + pointer 事件里，静态断言查不出「拖一下到底发生了没有」；CSP 与 Markdown 预览/导出更是只有浏览器才会执行。**画板没有任何 node 侧覆盖** —— 改动画板后必须本机补跑 `bash tools/verify-sketch-core.sh`。
+**为什么需要 `--js`**：六个 `.sh` 脚本要真机浏览器（`agent-browser` + 本地静态服务），因为画板的行为全在 canvas 渲染 + pointer 事件里，静态断言查不出「拖一下到底发生了没有」；CSP 与 Markdown 预览/导出更是只有浏览器才会执行。**画板没有任何 node 侧覆盖** —— 改动画板后必须本机补跑 `bash tools/verify-sketch-core.sh`。
 
 `verify-csp.sh` 与其它 `.sh` 略有不同：它不用 `python -m http.server`，而是用 `tools/_csp_server.py` 把 `tauri.conf.json` 里那条策略**原样**下发进浏览器（页面里若有内联 `<script>` 才复刻 Tauri 的 sha256 追加，前端全外链时就没有可追加的、策略一字不改），所以测的就是配置里那条策略，两者不会漂移。它的判据是「`securitypolicyviolation` 一条都没触发，且四条路径功能仍正常」——覆盖 mermaid 渲染、mermaid PNG 导出、画板绘制、画板 PNG 导出，并把 `data:` / `blob:` 图片加载单独拆成断言，坏掉时能直接看出是哪个 scheme 没放行。
 
@@ -250,6 +268,17 @@ GitHub Actions 上跑 `node tools/verify-all.js --js`，见 `.github/workflows/v
 
 > **约定：每次改动用户可见的行为后，在这里补一条**（按日期倒序，最新在上）。
 > 当前版本 `0.1.0`（见 `src-tauri/tauri.conf.json`）。还没到按语义化版本号发布的阶段，所以先按日期记。
+
+### 2026-09-24
+
+- **实习日志左栏新增「待办」面板**（热力图下方，可折叠）：增 / 删 / 勾选 / 双击原地编辑，未完成数用徽标常驻显示。
+  - **数据独立**：新建 `internlog:todos` 键，与日志彻底解耦 —— 不是日志的字段，也不进日志导入导出。这是「我打算做什么」的前瞻清单。
+  - 与 AI 周报第 3 段「待办 / 下周计划」的关系：**这里管记，AI 管写**。未完成待办作为素材喂进 prompt（`IlCore.openTodos` 已就绪），但**绝不自动写回任何日志** —— 自动写入会让"谁改了我的日志"变成糊涂账。
+  - **勾选后条目不移到末尾**（`sortTodos` 只在未完成/已完成两组间分层，组内保持加入顺序）—— 勾完东西瞬移是反直觉的。
+  - **折叠不整卡 `hidden`**，只藏 `.il-todo-body`，标题栏 + 未完成徽标常驻 —— 收起后也知道还剩几条没做。折叠状态存 `internlog:todoOpen`。
+  - 列表事件**全部委托**挂在容器上：条目会被 `renderTodos()` 整块重写，逐条绑监听会在每次重渲染后失效。双击编辑用换 `input` 的方式，**不用 `prompt()`**。
+  - 测试：`verify-internlog-search.sh` 新增 **E 段 54 项**（结构/回车新增/落盘 · 勾选视觉/编辑/Esc · 删除/折叠/徽标常驻 · reload 状态保持），`EXPECTED` 84 → **138**。⚠️ **该轮按约定未执行验证**，只做了 `node --check` 语法检查。
+  - 遗留：待办**未接入** Excel 台账 / 复制全部 Markdown / AI 周报素材（`IlCore.openTodos` 已就绪但 `buildUserPrompt` 尚未调用）。
 
 ### 2026-09-23
 
