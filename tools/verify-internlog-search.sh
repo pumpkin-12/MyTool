@@ -9,7 +9,7 @@
 #    list.innerHTML 不会打断输入焦点**。这条一旦被破坏（有人把检索框挪进列表里），
 #    用户每敲一个字就失焦 —— 属于"能用但极难用"的退化，必须钉住。
 #
-# 覆盖 84 项断言（检索 32 · 趋势 15 · 缺失周报 20 · 布局契约 17）。用法: bash tools/verify-internlog-search.sh
+# 覆盖 138 项断言（检索 32 · 趋势 15 · 缺失周报 20 · 布局契约 17 · 待办 54）。用法: bash tools/verify-internlog-search.sh
 # 报告: .workbuddy/_search.txt
 set -u
 
@@ -23,7 +23,7 @@ export PATH="$HOME/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:/c/Win
 export AGENT_BROWSER_ARGS="--disable-background-networking,--disable-component-update,--disable-domain-reliability,--no-pings,--disable-sync,--disable-breakpad,--no-first-run,--no-default-browser-check"
 
 REPORT=".workbuddy/_search.txt"
-EXPECTED=84
+EXPECTED=138
 PORT=8913
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ" || exit 1
@@ -484,6 +484,226 @@ EOF
 )"
 
 ACT_D_CLOSE="(function(){document.querySelector('.il-filters').click();document.querySelector('.il-trend-btn').click();return 'ok';})()"
+
+# ---------- E 待办清单（左栏热力图下方） ----------
+# 🔴 为什么必须真机跑：待办的行为全在 DOM 上 —— 回车是否真的新增、
+#    勾选后是否**划掉并变淡**（视觉事实，不是 class 事实）、
+#    双击改文本、折叠后**计数徽标是否还在**。
+#    静态断言只能证明"代码里写了那些 class 名"。
+#
+# ⚠️ 这个脚本的 E 段必须在**独立的 localStorage 状态下**跑：
+#    前面各段会把 internlog:items 换成 6 条样本、清掉 reported，
+#    但待办是独立键，互不影响 —— 所以开始时显式清一次 internlog:todos。
+#
+# 手写 helper：待办条目没有 data-* 之外的可测属性，靠 DOM 顺序定位。
+ASSERT_E1="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  var q = function (s) { return document.querySelector(s); };
+  var items = function () { return document.querySelectorAll('.il-todo-list .il-todo-item'); };
+  var texts = function () {
+    return Array.prototype.map.call(items(), function (i) {
+      return i.querySelector('.il-todo-text').textContent;
+    });
+  };
+  var typed = function (v) {
+    var el = q('.il-todo-input');
+    el.focus(); el.value = v;
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  };
+
+  /* --- 结构 --- */
+  ok('待办卡片存在', !!q('.il-todo'));
+  ok('待办卡片在左栏 .il-side 内', !!q('.il-side .il-todo'));
+  ok('待办卡片在热力图**下方**（DOM 顺序）',
+    !!(q('.il-side .il-heat') && q('.il-side .il-heat').compareDocumentPosition(q('.il-todo'))
+       & Node.DOCUMENT_POSITION_FOLLOWING));
+  ok('空态有引导文案', !!q('.il-todo-empty'));
+  eq('初始 0 条待办', items().length, 0);
+  ok('初始未完成徽标隐藏', q('.il-todo-badge').hidden === true);
+
+  /* --- 回车新增 --- */
+  typed('给车间补 MES 报工 SOP 配图');
+  eq('回车新增 1 条', items().length, 1);
+  eq('新增的文本正确', texts()[0], '给车间补 MES 报工 SOP 配图');
+  eq('新增后输入框已清空', q('.il-todo-input').value, '');
+  ok('🔴 新增后输入框**仍保持焦点**（便于连续录入）',
+    document.activeElement === q('.il-todo-input'));
+
+  /* --- 徽标与计数 --- */
+  eq('未完成徽标显示 1', q('.il-todo-badge').textContent, '1');
+  ok('有未完成项时徽标可见', q('.il-todo-badge').hidden === false);
+
+  /* --- 空白不许加 --- */
+  typed('    ');
+  eq('全空白输入不新增', items().length, 1);
+
+  /* --- 再补两条 --- */
+  typed('整理 9 月质检异常台账');
+  typed('问王工 PLC 通信超时的复现步骤');
+  eq('累计 3 条', items().length, 3);
+  eq('未完成徽标 3', q('.il-todo-badge').textContent, '3');
+
+  /* --- 落盘 --- */
+  var saved = [];
+  try { saved = JSON.parse(localStorage.getItem('toolbox:internlog:todos') || '[]'); } catch (e) { saved = []; }
+  eq('已落盘 3 条', saved.length, 3);
+  eq('落盘文本按加入顺序', saved.map(function (t) { return t.text; }).join('|'),
+    '给车间补 MES 报工 SOP 配图|整理 9 月质检异常台账|问王工 PLC 通信超时的复现步骤');
+  ok('落盘条目都带 id', saved.every(function (t) { return !!t.id; }));
+
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+ASSERT_E2="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  var q = function (s) { return document.querySelector(s); };
+  var items = function () { return document.querySelectorAll('.il-todo-list .il-todo-item'); };
+  var rowAt = function (i) { return items()[i]; };
+  var check = function (i) {
+    var cb = rowAt(i).querySelector('.il-todo-check');
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  /* --- 勾选：视觉事实，不是 class 事实 --- */
+  check(0);
+  eq('勾选后条目数不变', items().length, 3);
+  ok('🔴 勾选的条目带 .done', rowAt(0).classList.contains('done'));
+  var st = getComputedStyle(rowAt(0).querySelector('.il-todo-text'));
+  ok('🔴 勾选后文本真的划掉了（text-decoration 含 line-through）',
+    st.textDecorationLine.indexOf('line-through') >= 0);
+  ok('🔴 勾选后文本真的变淡了（opacity < 1，实际 ' + st.opacity + '）',
+    parseFloat(st.opacity) < 1);
+  eq('未完成徽标降到 2', q('.il-todo-badge').textContent, '2');
+
+  /* 🔴 关键：勾完不跳位 —— 已完成仍留在原位置，不移到末尾。
+     否则用户刚点的条目会瞬移，是反直觉的（IlCore.sortTodos 的设计约束）。 */
+  eq('🔴 勾选后条目**不跳位**（首条仍是原来那条）',
+    rowAt(0).querySelector('.il-todo-text').textContent, '给车间补 MES 报工 SOP 配图');
+
+  /* --- 取消勾选：状态与划线都要回退 --- */
+  check(0);
+  ok('取消勾选后 .done 移除', !rowAt(0).classList.contains('done'));
+  ok('取消勾选后划线消失',
+    getComputedStyle(rowAt(0).querySelector('.il-todo-text')).textDecorationLine.indexOf('line-through') < 0);
+  eq('徽标回到 3', q('.il-todo-badge').textContent, '3');
+
+  /* --- 双击编辑 --- */
+  var span = rowAt(1).querySelector('.il-todo-text');
+  span.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  var inp = q('.il-todo-list .il-todo-edit');
+  ok('双击后出现原地编辑框', !!inp);
+  eq('编辑框带出原文', inp ? inp.value : '', '整理 9 月质检异常台账');
+  inp.value = '整理 9 月质检异常台账（含返工）';
+  inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  eq('回车提交后文本已更新',
+    rowAt(1).querySelector('.il-todo-text').textContent, '整理 9 月质检异常台账（含返工）');
+  ok('编辑框已消失', !q('.il-todo-list .il-todo-edit'));
+
+  /* --- Esc 放弃编辑 --- */
+  var span2 = rowAt(2).querySelector('.il-todo-text');
+  span2.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  var inp2 = q('.il-todo-list .il-todo-edit');
+  inp2.value = '不该被保存的内容';
+  inp2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  eq('🔴 Esc 放弃编辑，原文不变',
+    rowAt(2).querySelector('.il-todo-text').textContent, '问王工 PLC 通信超时的复现步骤');
+
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+ASSERT_E3="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  var q = function (s) { return document.querySelector(s); };
+  var items = function () { return document.querySelectorAll('.il-todo-list .il-todo-item'); };
+  var disp = function (s) { var e = q(s); return e ? getComputedStyle(e).display : 'NO_EL'; };
+
+  /* --- 删除 --- */
+  eq('删除前 3 条', items().length, 3);
+  items()[2].querySelector('.il-todo-del').click();
+  eq('点 × 后剩 2 条', items().length, 2);
+  eq('删掉的是第 3 条', Array.prototype.map.call(items(), function (i) {
+    return i.querySelector('.il-todo-text').textContent;
+  }).join('|'), '给车间补 MES 报工 SOP 配图|整理 9 月质检异常台账（含返工）');
+  var saved = JSON.parse(localStorage.getItem('toolbox:internlog:todos') || '[]');
+  eq('删除已落盘（磁盘上 2 条）', saved.length, 2);
+
+  /* --- 折叠：用 body 的 display，标题栏与徽标必须还在 --- */
+  var folded0 = q('.il-todo').classList.contains('folded');
+  ok('默认展开（未折叠）', !folded0);
+  ok('默认展开时列表可见', disp('.il-todo-list') !== 'none');
+  ok('默认展开时输入框可见', disp('.il-todo-input') !== 'none');
+
+  q('.il-todo-toggle').click();
+  ok('🔴 折叠后 .il-todo-body 不可见', disp('.il-todo-body') === 'none');
+  ok('🔴 折叠后**标题栏仍在**（不是整卡 hidden）', disp('.il-todo-head') !== 'none');
+  ok('🔴 折叠后未完成徽标仍可见（收起也知道还有几条没做）',
+    disp('.il-todo-badge') !== 'none' && q('.il-todo-badge').hidden === false);
+  ok('折叠按钮文案变「展开 ▾」', q('.il-todo-toggle').textContent.indexOf('展开') >= 0);
+  eq('折叠按钮 aria-expanded=false', q('.il-todo-toggle').getAttribute('aria-expanded'), 'false');
+  eq('折叠状态已落盘', localStorage.getItem('toolbox:internlog:todoOpen'), 'false');
+
+  q('.il-todo-toggle').click();
+  ok('再点一次恢复展开', disp('.il-todo-body') !== 'none');
+  eq('展开状态已落盘', localStorage.getItem('toolbox:internlog:todoOpen'), 'true');
+
+  /* --- 回到基础状态，供 E4 reload 后比对 --- */
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+ASSERT_E4="$(cat <<'EOF'
+(function () {
+  var pass = 0, fail = [];
+  function ok(l, c) { if (c) pass++; else fail.push(l); }
+  function eq(l, g, w) { if (g === w) pass++; else fail.push(l + ' 期望[' + w + '] 实际[' + g + ']'); }
+  var q = function (s) { return document.querySelector(s); };
+  var items = function () { return document.querySelectorAll('.il-todo-list .il-todo-item'); };
+  var texts = function () {
+    return Array.prototype.map.call(items(), function (i) {
+      return i.querySelector('.il-todo-text').textContent;
+    });
+  };
+
+  /* reload 之后：删掉的那条不能复活，改过的文本要留着，折叠状态要记住 */
+  eq('🔴 reload 后仍是 2 条（删掉的没复活）', items().length, 2);
+  eq('🔴 reload 后文本是改过的版本', texts().join('|'),
+    '给车间补 MES 报工 SOP 配图|整理 9 月质检异常台账（含返工）');
+  ok('reload 后徽标仍显示未完成数 2', q('.il-todo-badge').textContent === '2');
+
+  /* 完成态也要能过夜 */
+  var cb = items()[1].querySelector('.il-todo-check');
+  cb.checked = true;
+  cb.dispatchEvent(new Event('change', { bubbles: true }));
+  ok('勾选后带 .done', items()[1].classList.contains('done'));
+  var saved = JSON.parse(localStorage.getItem('toolbox:internlog:todos') || '[]');
+  var t = saved.filter(function (x) { return x.text.indexOf('返工') >= 0; })[0];
+  ok('🔴 落盘里 done=true', !!t && t.done === true);
+  ok('🔴 完成时记下 doneAt 日期（yyyy-mm-dd）', !!t && /^\d{4}-\d{2}-\d{2}$/.test(t.doneAt));
+  var t2 = saved.filter(function (x) { return x.text.indexOf('SOP 配图') >= 0; })[0];
+  ok('未完成项的 doneAt 为空串', !!t2 && t2.doneAt === '');
+
+  return JSON.stringify({ 通过: pass, 失败: fail });
+})()
+EOF
+)"
+
+ACT_E_CLEAR="(function(){localStorage.removeItem('toolbox:internlog:todos');localStorage.removeItem('toolbox:internlog:todoOpen');return 'ok';})()"
+
 run() {
   echo "exe : $AB"
   echo "url : $URL"
@@ -540,11 +760,22 @@ run() {
   step "D2. 筛选 / 趋势 开关行为" "$ASSERT_D2"; RD2="$LAST"
   "$AB" eval "$ACT_D_CLOSE" >/dev/null; sleep 1
 
+  # ---------- E 待办清单 ----------
+  # 独立键（internlog:todos），与前面各段的日志样本互不影响；跑前显式清一次。
+  "$AB" eval "$ACT_E_CLEAR" >/dev/null; sleep 1
+  "$AB" reload >/dev/null 2>&1; sleep 16
+  step "E1. 待办：结构 / 回车新增 / 落盘" "$ASSERT_E1"; RE1="$LAST"
+  step "E2. 待办：勾选视觉 / 编辑 / Esc" "$ASSERT_E2"; RE2="$LAST"
+  step "E3. 待办：删除 / 折叠（徽标常驻）" "$ASSERT_E3"; RE3="$LAST"
+  "$AB" reload >/dev/null 2>&1; sleep 16
+  step "E4. 待办：reload 后状态保持" "$ASSERT_E4"; RE4="$LAST"
+
   echo ""
   echo "================= 汇总 ================="
   local NP=0 NF=0
   for pair in "A0:$RA0" "A1:$RA1" "A2:$RA2" "A3:$RA3" "A4:$RA4" "A5:$RA5" "A6b:$RA6" \
-              "B1:$RB1" "B2:$RB2" "B3:$RB3" "C1:$RC1" "C2:$RC2" "C3:$RC3" "C4:$RC4" "D1:$RD1" "D2:$RD2"; do
+              "B1:$RB1" "B2:$RB2" "B3:$RB3" "C1:$RC1" "C2:$RC2" "C3:$RC3" "C4:$RC4" "D1:$RD1" "D2:$RD2" \
+              "E1:$RE1" "E2:$RE2" "E3:$RE3" "E4:$RE4"; do
     local n="${pair%%:*}" v="${pair#*:}"
     if printf '%s' "$v" | grep -qF '失败\":[]'; then
       local p; p=$(printf '%s' "$v" | sed -n 's/.*通过\\":\([0-9]\{1,\}\).*/\1/p')

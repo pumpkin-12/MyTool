@@ -244,14 +244,105 @@ const IlCore = (function () {
       .filter(w => w.count > 0 && !w.done);
   }
 
+  /* ---------- 待办清单 ----------
+   * 结构：{ id, text, done, doneAt }
+   * 🔴 id 由调用方传入（node 侧测试要能钉住），内部**不取当前时间** —— 与 today 同理。
+   * doneAt 记完成那天的日期串（'' 表示未完成），用于「今天完成了什么」的回溯。
+   * 与 AI 周报第 3 段「待办 / 下周计划」的关系：**这里管记，AI 管写** ——
+   * 未完成的待办会作为素材喂进 buildUserPrompt，但不自动写入任何日志。 */
+  const MAX_TODO_LEN = 200;
+
+  /* 脏数据兜底：localStorage 里的东西随时可能是手改的 / 旧版本的。
+   * 非法项直接丢弃而不是修补 —— 修补会让"为什么这条不见了"变成玄学。*/
+  function normalizeTodos(raw) {
+    if (!Array.isArray(raw)) return [];
+    const seen = {};
+    const out = [];
+    for (let i = 0; i < raw.length; i++) {
+      const t = raw[i];
+      if (!t || typeof t !== 'object') continue;
+      const id = String(t.id == null ? '' : t.id).trim();
+      if (!id || seen[id]) continue;
+      const text = String(t.text == null ? '' : t.text).trim().slice(0, MAX_TODO_LEN);
+      if (!text) continue;
+      seen[id] = true;
+      out.push({
+        id: id,
+        text: text,
+        done: !!t.done,
+        doneAt: (t.done && typeof t.doneAt === 'string' && parseDay(t.doneAt)) ? t.doneAt : ''
+      });
+    }
+    return out;
+  }
+
+  /* 新增：返回**新数组**（调用方拿去 set），不原地改。
+   * 文本首尾空白裁掉；裁完为空 → 返回 null 表示"不该加"。 */
+  function addTodo(list, id, text) {
+    const s = String(text == null ? '' : text).trim().slice(0, MAX_TODO_LEN);
+    if (!s) return null;
+    const out = normalizeTodos(list);
+    if (out.some(t => t.id === String(id))) return null;   /* id 撞车 = 调用方 bug，宁可不加 */
+    out.push({ id: String(id), text: s, done: false, doneAt: '' });
+    return out;
+  }
+
+  /* 勾选 / 取消：doneAt 跟着 done 走，取消勾选要清掉，否则"完成于"会留着幽灵日期 */
+  function toggleTodo(list, id, today) {
+    const out = normalizeTodos(list);
+    const t = out.filter(x => x.id === String(id))[0];
+    if (!t) return out;
+    t.done = !t.done;
+    t.doneAt = t.done ? (parseDay(today) ? today : '') : '';
+    return out;
+  }
+
+  function removeTodo(list, id) {
+    return normalizeTodos(list).filter(x => x.id !== String(id));
+  }
+
+  /* 原地编辑文本。改成空串 = 删除（比留一条空待办更符合直觉）。 */
+  function editTodo(list, id, text) {
+    const s = String(text == null ? '' : text).trim().slice(0, MAX_TODO_LEN);
+    if (!s) return removeTodo(list, id);
+    const out = normalizeTodos(list);
+    const t = out.filter(x => x.id === String(id))[0];
+    if (t) t.text = s;
+    return out;
+  }
+
+  /* 排序：未完成在前；两组内部都保持**加入顺序**（新加的在下）。
+   * 🔴 不做"已完成沉底按完成时间倒序" —— 那会让勾完之后条目跳走，
+   * 用户刚点的东西瞬移是反直觉的。 */
+  function sortTodos(list) {
+    const norm = normalizeTodos(list);
+    return norm.filter(t => !t.done).concat(norm.filter(t => t.done));
+  }
+
+  function todoStats(list) {
+    const norm = normalizeTodos(list);
+    let done = 0;
+    for (let i = 0; i < norm.length; i++) if (norm[i].done) done++;
+    return { total: norm.length, done: done, open: norm.length - done };
+  }
+
+  /* 喂给 AI 周报的素材：未完成待办。上限 20 条防 prompt 失控。 */
+  function openTodos(list, limit) {
+    const cap = (limit > 0 ? limit : 20);
+    return sortTodos(list).filter(t => !t.done).slice(0, cap).map(t => t.text);
+  }
+
   return {
-    WEEKDAY: WEEKDAY,
+    WEEKDAY: WEEKDAY, MAX_TODO_LEN: MAX_TODO_LEN,
     parseDay: parseDay, dayKey: dayKey, addDays: addDays, diffDays: diffDays,
     weekStartOf: weekStartOf, weekdayOf: weekdayOf, moodNum: moodNum,
     filterLogs: filterLogs, hitsQuery: hitsQuery, allTags: allTags,
     LEDGER_HEAD: LEDGER_HEAD, ledgerRows: ledgerRows,
     trendSeries: trendSeries, trendSegments: trendSegments, movingAvg: movingAvg,
-    weeksOf: weeksOf, missingWeeks: missingWeeks
+    weeksOf: weeksOf, missingWeeks: missingWeeks,
+    normalizeTodos: normalizeTodos, addTodo: addTodo, toggleTodo: toggleTodo,
+    removeTodo: removeTodo, editTodo: editTodo, sortTodos: sortTodos,
+    todoStats: todoStats, openTodos: openTodos
   };
 })();
 /* ===TESTABLE:IlCore:end=== */
@@ -296,6 +387,20 @@ registerTool({
             <i class="mn" style="margin-left:10px"></i><span>写了未评</span>
             <i class="m0" style="margin-left:10px"></i><span>没写</span>
           </div>
+        </div>
+      </div>
+      <div class="il-todo">
+        <div class="il-todo-head">
+          <span class="il-heat-title">待办</span>
+          <span class="il-todo-badge" hidden></span>
+          <button class="btn btn-sm il-todo-toggle" title="展开 / 收起待办">收起 ▴</button>
+        </div>
+        <div class="il-todo-body">
+          <div class="il-todo-add">
+            <input class="field il-todo-input" maxlength="200" placeholder="加一条待办，回车确认…">
+            <button class="btn btn-sm btn-primary il-todo-addbtn">加</button>
+          </div>
+          <div class="il-todo-list"></div>
         </div>
       </div>
         </aside>
@@ -1581,6 +1686,142 @@ registerTool({
       };
       reader.readAsText(f);
     });
+    /* ================= 待办清单 =================
+     * 存 internlog:todos，**与日志彻底解耦** —— 不是日志的字段，也不进日志导入导出。
+     * 设计意图（2026-09-24 定）：这是「我打算做什么」的前瞻清单；
+     * AI 周报第 3 段「待办 / 下周计划」是「写出来的成品」。**这里管记，AI 管写。**
+     * 未完成的待办在生成周报时作为素材喂进 prompt（见 IlCore.openTodos），
+     * 但绝不自动写回任何日志 —— 自动写入会让"谁改了我的日志"变成糊涂账。
+     * 折叠状态存 internlog:todoOpen（与 filtersOpen / trendOpen 同习惯）。 */
+    let todos = IlCore.normalizeTodos(AppStore.get('internlog:todos', []));
+    const todoBox = el.querySelector('.il-todo');
+    const todoHead = todoBox.querySelector('.il-todo-head');
+    const todoBtn = todoBox.querySelector('.il-todo-toggle');
+    const todoBadge = todoBox.querySelector('.il-todo-badge');
+    const todoList = todoBox.querySelector('.il-todo-list');
+    const todoInput = todoBox.querySelector('.il-todo-input');
+    const todoAddBtn = todoBox.querySelector('.il-todo-addbtn');
+
+    /* id 生成：时间戳 + 随机串。**只在浏览器侧生成**，IlCore 里不取时间（测试要能钉住）。 */
+    function newTodoId() {
+      return 'td' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+    /* 今天的本地日期串 —— 用手拼，不用 toISOString（那是 UTC，东八区会差一天） */
+    function todayKey() {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+    const saveTodos = () => AppStore.set('internlog:todos', todos);
+
+    function renderTodos() {
+      const st = IlCore.todoStats(todos);
+      /* 徽标只显示未完成数；全清空时整块藏起来，不留一个"0"占位 */
+      if (st.open > 0) {
+        todoBadge.textContent = String(st.open);
+        todoBadge.hidden = false;
+      } else {
+        todoBadge.hidden = true;
+      }
+      const box = IlCore.sortTodos(todos);
+      if (!box.length) {
+        todoList.innerHTML = '<div class="hint il-todo-empty">还没有待办。上面输入框敲一条试试。</div>';
+        return;
+      }
+      todoList.innerHTML = box.map(t =>
+        '<div class="il-todo-item' + (t.done ? ' done' : '') + '" data-id="' + esc(t.id) + '">'
+        + '<input type="checkbox" class="il-todo-check"' + (t.done ? ' checked' : '') + '>'
+        + '<span class="il-todo-text" title="双击可编辑">' + esc(t.text) + '</span>'
+        + '<button class="il-todo-del" title="删除">×</button>'
+        + '</div>').join('');
+    }
+
+    function addTodoFromInput() {
+      const v = todoInput.value;
+      const next = IlCore.addTodo(todos, newTodoId(), v);
+      if (!next) { showToast('待办内容不能为空'); return; }
+      todos = next;
+      todoInput.value = '';
+      saveTodos();
+      renderTodos();
+      todoInput.focus();   /* 连续录入不中断 */
+    }
+
+    todoAddBtn.addEventListener('click', addTodoFromInput);
+    todoInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); addTodoFromInput(); }
+    });
+
+    /* 列表用**事件委托**挂在容器上：条目会被 renderTodos() 整块重写，
+     * 逐个绑监听会在每次重渲染后失效（这是最经典的坑）。 */
+    todoList.addEventListener('change', e => {
+      const cb = e.target.closest && e.target.closest('.il-todo-check');
+      if (!cb) return;
+      const row = cb.closest('.il-todo-item');
+      if (!row) return;
+      todos = IlCore.toggleTodo(todos, row.dataset.id, todayKey());
+      saveTodos();
+      renderTodos();
+    });
+    todoList.addEventListener('click', e => {
+      const del = e.target.closest && e.target.closest('.il-todo-del');
+      if (!del) return;
+      const row = del.closest('.il-todo-item');
+      if (!row) return;
+      todos = IlCore.removeTodo(todos, row.dataset.id);
+      saveTodos();
+      renderTodos();
+    });
+    /* 双击文本原地编辑：换成 input，失焦 / 回车提交，Esc 放弃。
+     * 不用 prompt() —— 那个会阻塞且样式脱离主题。 */
+    todoList.addEventListener('dblclick', e => {
+      const span = e.target.closest && e.target.closest('.il-todo-text');
+      if (!span) return;
+      const row = span.closest('.il-todo-item');
+      const id = row.dataset.id;
+      const old = span.textContent;
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.className = 'field il-todo-edit';
+      inp.value = old;
+      inp.maxLength = IlCore.MAX_TODO_LEN;
+      let settled = false;
+      const commit = ok => {
+        if (settled) return;
+        settled = true;
+        if (ok) {
+          todos = IlCore.editTodo(todos, id, inp.value);
+          saveTodos();
+        }
+        renderTodos();
+      };
+      inp.addEventListener('blur', () => commit(true));
+      inp.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { ev.preventDefault(); commit(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); commit(false); }
+      });
+      span.replaceWith(inp);
+      inp.focus();
+      inp.select();
+    });
+
+    (function initTodoFold() {
+      let open = AppStore.get('internlog:todoOpen', true) !== false;
+      function sync() {
+        todoBox.classList.toggle('folded', !open);
+        todoBtn.textContent = open ? '收起 ▴' : '展开 ▾';
+        todoBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+      todoBtn.addEventListener('click', () => {
+        open = !open;
+        AppStore.set('internlog:todoOpen', open);
+        sync();
+      });
+      sync();
+    })();
+
+    renderTodos();
+
     renderList();
     return () => clearTimeout(saveTimer);
   }

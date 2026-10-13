@@ -197,8 +197,42 @@
   .il-side { position: sticky; top: 12px; }
   .il-side .il-heat { margin-bottom: 0; }
   .il-main { min-width: 0; }
-  /* 日志正文保持好读的行宽 —— 右栏再宽也不让正文跟着变宽 */
   .il-list { max-width: 820px; }
+
+  /* ---------- 待办（左栏，热力图下方） ----------
+   * 高度上限 320px：热力图约 300px，加起来 620px 仍在常规视口内。
+   * 列表内部滚动而不是撑高整页 —— 左栏是 sticky 的，撑高会让它自己滚不到底。 */
+  .il-todo { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 14px; margin-top: 16px; }
+  .il-todo-head { display: flex; align-items: center; gap: 8px; }
+  .il-todo-head .il-heat-title { flex: 0 0 auto; }
+  .il-todo-badge {
+    flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 999px; background: var(--accent); color: #fff;
+    font-size: 11px; font-weight: 600; line-height: 1;
+  }
+  .il-todo-head .il-todo-toggle { margin-left: auto; flex: 0 0 auto; }
+  .il-todo-add { display: flex; gap: 8px; margin: 12px 0 10px; }
+  .il-todo-add .il-todo-input { flex: 1 1 auto; min-width: 0; }
+  .il-todo-add .btn { flex: 0 0 auto; }
+  .il-todo-list { max-height: 320px; overflow-y: auto; }
+  .il-todo-empty { padding: 6px 2px; }
+  .il-todo-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px; border-radius: 6px; }
+  .il-todo-item:hover { background: var(--hover, rgba(127, 127, 127, .08)); }
+  .il-todo-item .il-todo-check { flex: 0 0 auto; margin: 2px 0 0; cursor: pointer; }
+  .il-todo-text { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.5; word-break: break-word; cursor: text; }
+  /* 完成态：划掉 + 变淡。用 opacity 而不是改 color —— 深浅主题下都成立 */
+  .il-todo-item.done .il-todo-text { text-decoration: line-through; opacity: .45; }
+  .il-todo-del {
+    flex: 0 0 auto; border: 0; background: transparent; color: var(--muted);
+    font-size: 16px; line-height: 1; padding: 2px 6px; cursor: pointer; border-radius: 6px;
+  }
+  .il-todo-del:hover { color: #d9534f; background: rgba(217, 83, 79, .12); }
+  .il-todo-edit { flex: 1 1 auto; min-width: 0; font-size: 13px; padding: 2px 6px; }
+  /* 折叠：只留标题栏。用 body 的 display 而不是整卡 hidden，
+     这样标题栏上的未完成计数始终可见（收起后也知道还有几条没做）。 */
+  .il-todo.folded .il-todo-body { display: none; }
+
   /* 窄窗退回单栏：左栏叠到上方，并且默认收起（用「热力图 ▾」展开），
    * 否则它会把日志列表顶出第一屏 —— 那正是之前修掉的问题。 */
   @media (max-width: 1099px) {
